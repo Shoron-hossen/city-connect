@@ -152,7 +152,7 @@ function Navbar({ user, setUser }: { user: User | null, setUser: (user: User | n
   return (
     <nav className="bg-[#00103a] text-white py-4 px-6 md:px-12 flex justify-between items-center shadow-md sticky top-0 z-40 backdrop-blur-md bg-opacity-90 border-b border-white/10">
       <Link to={user ? (user.role === 'Super Admin' ? "/admin" : "/dashboard") : "/"} className="text-2xl font-bold tracking-tight flex items-center gap-2">
-        <MapPin className="text-blue-400" /> CityConnect
+        <MapPin className="text-blue-400" /> City-Connect
       </Link>
       <div className="hidden md:flex items-center gap-8">
         {!isDashboard && (user?.role !== 'Super Admin') && <Link to="/" className="hover:text-blue-300 transition-colors font-medium">Home</Link>}
@@ -233,7 +233,7 @@ function Footer() {
       <div className="mb-4">
         <Link to="/about" className="hover:text-white transition-colors">About Us</Link>
       </div>
-      <p>&copy; {new Date().getFullYear()} CityConnect. A Hub Connecting Citizens with City Services.</p>
+      <p>&copy; {new Date().getFullYear()} City-Connect. A Hub Connecting Citizens with City Services.</p>
     </footer>
   );
 }
@@ -522,7 +522,7 @@ function SignUp({ setUser }: { setUser: (user: User) => void }) {
             {step === 3 && 'Face Recognition'}
           </h1>
           <p className="text-gray-400">
-            {step === 0 && 'Sign up to join the CityConnect network.'}
+            {step === 0 && 'Sign up to join the City-Connect network.'}
             {step === 1 && `Enter the 6-digit code sent to ${email}`}
             {step === 2 && 'Verify your identity with official documents.'}
             {step === 3 && 'Complete biometric scan to secure your identity.'}
@@ -1004,7 +1004,7 @@ function AdminLogin({ setUser }: { setUser: (user: User | null) => void }) {
             <label className="block text-xs font-semibold tracking-wider mb-2 uppercase text-gray-400">Admin Email</label>
             <div className="relative">
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" size={18} />
-              <input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="admin@cityconnect.com" className="w-full bg-white/5 border border-white/10 rounded-xl pl-12 pr-5 py-4 text-white placeholder-gray-600 focus:ring-2 focus:ring-blue-500 outline-none transition-all" />
+              <input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="admin@City-Connect.com" className="w-full bg-white/5 border border-white/10 rounded-xl pl-12 pr-5 py-4 text-white placeholder-gray-600 focus:ring-2 focus:ring-blue-500 outline-none transition-all" />
             </div>
           </div>
           <div>
@@ -1032,7 +1032,7 @@ function AdminLogin({ setUser }: { setUser: (user: User | null) => void }) {
 
 function HomepageChatBox({ isEmbedded }: { isEmbedded?: boolean }) {
   const [messages, setMessages] = useState<{role: 'user' | 'ai', text: string}[]>([
-    { role: 'ai', text: 'Hi! Ask me anything about CityConnect services.' }
+    { role: 'ai', text: 'Hi! Ask me anything about City-Connect services.' }
   ]);
   const [userMsg, setUserMsg] = useState('');
   const [loading, setLoading] = useState(false);
@@ -1054,7 +1054,7 @@ function HomepageChatBox({ isEmbedded }: { isEmbedded?: boolean }) {
       const data = await fetch('/api/gemini/public', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: `You are the CityConnect public Assistant. Be concise. User query: ${trimmed}` })
+        body: JSON.stringify({ prompt: `You are the City-Connect public Assistant. Be concise. User query: ${trimmed}` })
       });
       const json = await data.json();
       let aiText = 'Sorry, I could not get a response.';
@@ -1175,7 +1175,7 @@ function Dashboard({ user, setUser }: { user: User, setUser: (user: User | null)
         {/* Mobile-like container for the core dashboard actions, centered on desktop */}
         <div className="w-full md:w-1/2 max-w-md mx-auto md:mx-0 flex flex-col">
           <div className="text-center md:text-left mb-8">
-            <h1 className="text-4xl font-bold mb-2 tracking-tight">CityConnect</h1>
+            <h1 className="text-4xl font-bold mb-2 tracking-tight">City-Connect</h1>
             <div className="flex items-center justify-center md:justify-start text-gray-300 gap-1">
               <MapPin size={18} />
               <span>{location}</span>
@@ -1254,13 +1254,13 @@ function AboutUs({ user, setUser }: { user: User | null, setUser: (user: User | 
         </button>
         
         <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-3xl p-8 md:p-12 shadow-2xl">
-          <h1 className="text-5xl font-bold mb-8 tracking-tight text-center">About CityConnect</h1>
+          <h1 className="text-5xl font-bold mb-8 tracking-tight text-center">About City-Connect</h1>
           
           <div className="space-y-8 text-lg text-gray-200 leading-relaxed">
             <section>
               <h2 className="text-2xl font-semibold text-blue-400 mb-4">Our Mission</h2>
               <p>
-                CityConnect is a smart city management platform designed to bridge the gap between citizens and local authorities. 
+                City-Connect is a smart city management platform designed to bridge the gap between citizens and local authorities. 
                 Our mission is to empower residents to take an active role in improving their urban environment through technology and transparency.
               </p>
             </section>
@@ -1268,7 +1268,7 @@ function AboutUs({ user, setUser }: { user: User | null, setUser: (user: User | 
             <section>
               <h2 className="text-2xl font-semibold text-blue-400 mb-4">How It Works</h2>
               <p>
-                Using advanced AI and real-time data processing, CityConnect allows users to report infrastructure issues, 
+                Using advanced AI and real-time data processing, City-Connect allows users to report infrastructure issues, 
                 public safety concerns, and environmental problems instantly. Our AI analysis categorizes and prioritizes 
                 reports, ensuring that the right city departments can respond efficiently.
               </p>
@@ -1278,7 +1278,7 @@ function AboutUs({ user, setUser }: { user: User | null, setUser: (user: User | 
               <h2 className="text-2xl font-semibold text-blue-400 mb-4">Our Vision</h2>
               <p>
                 We envision a future where every city is a "Smart City" – where data-driven decisions lead to safer streets, 
-                cleaner neighborhoods, and more responsive governance. CityConnect is the first step towards that future.
+                cleaner neighborhoods, and more responsive governance. City-Connect is the first step towards that future.
               </p>
             </section>
             
@@ -2697,7 +2697,7 @@ function AdminSettings() {
         <div className="space-y-6">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Support Email Address</label>
-            <input type="email" defaultValue="support@cityconnect.com" className="w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2.5" />
+            <input type="email" defaultValue="support@City-Connect.com" className="w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2.5" />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Max Image Upload Size (MB)</label>
@@ -2975,7 +2975,7 @@ function AIChatPage({ user, setUser }: { user: User, setUser: (user: User | null
     try {
       const history = await request('/api/chat/history');
       if (history.length === 0) {
-        setMessages([{ role: 'model', content: `Hello ${user.name}! I am your personalized CityConnect AI. I can help you analyze reports, answer questions about city issues, or just chat. How can I assist you today?` }]);
+        setMessages([{ role: 'model', content: `Hello ${user.name}! I am your personalized City-Connect AI. I can help you analyze reports, answer questions about city issues, or just chat. How can I assist you today?` }]);
       } else {
         setMessages(history);
       }
@@ -3001,7 +3001,7 @@ function AIChatPage({ user, setUser }: { user: User, setUser: (user: User | null
     }).catch(() => {});
 
     try {
-      const prompt = `You are a personalized AI assistant for CityConnect user ${user.name}. 
+      const prompt = `You are a personalized AI assistant for City-Connect user ${user.name}. 
              Context: You help with city reports, safety, and general inquiries.
              User query: ${userMsg || (fileData ? '[File attached]' : '')}`;
              
@@ -3386,7 +3386,7 @@ function FloatingAIAssistant() {
           <div className="bg-[#c89613] text-white p-4 flex justify-between items-center shadow-lg">
             <div className="flex items-center gap-2">
               <Brain size={20} />
-              <h3 className="font-bold">CityConnect AI</h3>
+              <h3 className="font-bold">City-Connect AI</h3>
             </div>
             <button onClick={() => setIsOpen(false)} className="hover:bg-white/20 p-1 rounded-md transition-colors">
               <X size={18} />
