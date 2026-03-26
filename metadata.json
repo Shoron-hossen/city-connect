@@ -1,0 +1,5 @@
+{
+  "name": "CityConnect",
+  "description": "A Hub Connecting Citizens with City Services",
+  "requestFramePermissions": ["camera"]
+}

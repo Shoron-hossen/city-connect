@@ -1,0 +1,16 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+database.sqlite
+
+# Flutter related
+cityconnect_mobile/build/
+cityconnect_mobile/.flutter-plugins*
+cityconnect_mobile/.packages
+cityconnect_mobile/.pub-cache/
+cityconnect_mobile/pubspec.lock

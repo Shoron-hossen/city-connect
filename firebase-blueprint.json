@@ -1,0 +1,71 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "System user (Citizen or Admin)",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["citizen", "admin", "Super Admin"] },
+        "status": { "type": "string", "enum": ["active", "blocked"] },
+        "phone": { "type": "string" },
+        "location": { "type": "string" },
+        "nid_number": { "type": "string" },
+        "birth_certificate_number": { "type": "string" },
+        "photo_url": { "type": "string" },
+        "profile_photo_url": { "type": "string" },
+        "parent_number": { "type": "string" },
+        "parent_email": { "type": "string", "format": "email" },
+        "relative_number": { "type": "string" },
+        "relative_email": { "type": "string", "format": "email" },
+        "scheduled_deletion_at": { "type": "string", "format": "date-time" },
+        "join_date": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "email", "role"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "Citizen reported issue",
+      "type": "object",
+      "properties": {
+        "user_id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string" },
+        "location": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "reviewed", "initiated", "resolved", "rejected"] },
+        "image_url": { "type": "string" },
+        "ai_analysis": { "type": "string" },
+        "admin_notes": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["user_id", "title", "category", "status"]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "User activity audit trail",
+      "type": "object",
+      "properties": {
+        "user_id": { "type": "string" },
+        "action": { "type": "string" },
+        "details": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile data"
+    },
+    "/reports/{reportId}": {
+      "schema": "Report",
+      "description": "Citizen reports"
+    },
+    "/activity_logs/{logId}": {
+      "schema": "ActivityLog",
+      "description": "Audit logs"
+    }
+  }
+}
