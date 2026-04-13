@@ -135,12 +135,14 @@ try {
       throw new Error('Firebase service account is missing private_key.');
     }
 
+    const calculatedBucket = process.env.VITE_FIREBASE_STORAGE_BUCKET || `${serviceAccount.project_id}.firebasestorage.app`;
     const app = admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
+      credential: admin.credential.cert(serviceAccount),
+      storageBucket: calculatedBucket
     });
 
-      const databaseId = process.env.FIREBASE_DATABASE_ID;
-      const storageBucket = `${serviceAccount.project_id}.firebasestorage.app`;
+    const databaseId = process.env.FIREBASE_DATABASE_ID;
+    const storageBucket = calculatedBucket;
       
       if (databaseId && databaseId !== '(default)' && databaseId.trim() !== '') {
         const fs = getFirestore(app);
@@ -588,6 +590,9 @@ app.put('/api/admin/reports/:id', authenticate, async (req: any, res: any) => {
         created_at: admin.firestore.FieldValue.serverTimestamp(),
         timestamp: admin.firestore.FieldValue.serverTimestamp()
       });
+      
+      // Remove from AI queue since it's now in manual review
+      await db_firebase.collection('ai_analysis_queue').doc(id).delete();
     }
 
     res.json({ success: true, message: 'Report updated successfully' });
@@ -850,11 +855,11 @@ app.put('/api/auth/profile', authenticate, async (req: any, res) => {
     if (photo_url && photo_url.includes('base64,')) {
       const uploaded = await uploadBase64ToStorage(photo_url, `users/${email}/photo_${Date.now()}.jpg`);
       // If storage upload succeeds use the URL, otherwise keep the base64 string (max 500KB)
-      finalPhotoUrl = uploaded || photo_url.substring(0, 500000);
+      finalPhotoUrl = uploaded || photo_url;
     }
     if (profile_photo_url && profile_photo_url.includes('base64,')) {
       const uploaded = await uploadBase64ToStorage(profile_photo_url, `users/${email}/profile_${Date.now()}.jpg`);
-      finalProfilePhotoUrl = uploaded || profile_photo_url.substring(0, 500000);
+      finalProfilePhotoUrl = uploaded || profile_photo_url;
     }
 
     const updatedFields: any = {
@@ -1617,7 +1622,7 @@ app.post('/api/reports', authenticate, async (req: any, res) => {
     let finalImageUrl = image_url || null;
     if (image_url && image_url.includes('base64,')) {
       const uploaded = await uploadBase64ToStorage(image_url, `reports/${reportId}/image_${Date.now()}.jpg`);
-      finalImageUrl = uploaded || image_url.substring(0, 200000); // Keep base64 if storage fails
+      finalImageUrl = uploaded || image_url; // Keep full base64 if storage fails
     }
 
     const newReport = {

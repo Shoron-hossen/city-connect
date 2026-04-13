@@ -499,7 +499,34 @@ function SignUp({ setUser }: { setUser: (user: User) => void }) {
     if (file) {
       const reader = new FileReader();
       reader.onloadend = () => {
-        setter(reader.result as string);
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+          const MAX_SIZE = 800;
+          if (width > height) {
+            if (width > MAX_SIZE) {
+              height *= MAX_SIZE / width;
+              width = MAX_SIZE;
+            }
+          } else {
+            if (height > MAX_SIZE) {
+              width *= MAX_SIZE / height;
+              height = MAX_SIZE;
+            }
+          }
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, width, height);
+            setter(canvas.toDataURL('image/jpeg', 0.6));
+          } else {
+            setter(reader.result as string);
+          }
+        };
+        img.src = reader.result as string;
       };
       reader.readAsDataURL(file);
     }
@@ -1646,7 +1673,40 @@ function ReportIssue({ user, setUser }: { user: User, setUser: (user: User | nul
     if (file) {
       const reader = new FileReader();
       reader.onloadend = () => {
-        setImage(reader.result as string);
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+          
+          // Max dimension 800px to strictly limit the base64 size well below 1MB
+          const MAX_SIZE = 800;
+          if (width > height) {
+            if (width > MAX_SIZE) {
+              height *= MAX_SIZE / width;
+              width = MAX_SIZE;
+            }
+          } else {
+            if (height > MAX_SIZE) {
+              width *= MAX_SIZE / height;
+              height = MAX_SIZE;
+            }
+          }
+          
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, width, height);
+            // highly compressed JPEG (0.6 quality)
+            const compressedBase64 = canvas.toDataURL('image/jpeg', 0.6);
+            setImage(compressedBase64);
+          } else {
+            // Fallback if canvas fails
+            setImage(reader.result as string);
+          }
+        };
+        img.src = reader.result as string;
       };
       reader.readAsDataURL(file);
     }
@@ -2648,20 +2708,6 @@ Provide your response ONLY as valid JSON:
           ai_analysis: JSON.stringify(analysis)
         })
       });
-      
-      // Remove from AI queue if needed
-      if (activeSubTab === 'queue') {
-        try {
-          await request(`/api/admin/report-queue/${report.id}/process`, {
-            method: 'POST',
-            body: JSON.stringify({ analysis, isApproved: false })
-          });
-        } catch (queueErr) {
-          // Queue removal is non-critical
-          console.warn('Queue removal skipped:', queueErr);
-        }
-      }
-
       alert(`✅ Report sent to Manual Review queue!\n\nAI Recommendation: ${analysis.is_correct ? 'APPROVE ✓' : 'REJECT ✗'}\n\nReasoning: ${analysis.reasoning}\n\nAdmin can now review the full report with photo in Manual Review section.`);
       fetchData();
     } catch (err) {
