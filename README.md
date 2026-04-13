@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # City-Connect 🏙️
 
 City-Connect is a comprehensive citizen engagement and emergency response platform. It bridges the gap between citizens and local authorities through AI-powered report verification, real-time tracking, and a robust emergency SOS system.
@@ -76,3 +77,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ---
 Built with ❤️ for a safer and more connected city.
+=======
+
+>>>>>>> 8cb2b468976ce6061284f0c72a3e56c2e9dd38ea
