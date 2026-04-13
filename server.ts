@@ -2,15 +2,21 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 import { GoogleGenAI } from '@google/genai';
 import express from 'express';
+import http from 'http';
+import { Server as SocketServer } from 'socket.io';
+import twilio from 'twilio';
 import cors from 'cors';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import nodemailer from 'nodemailer';
 import admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import fs from 'fs';
 import { Groq } from 'groq-sdk';
-import db from './db.js';
+import { startDisasterAlertService } from './disasterService';
+// SQLite removed for Vercel deployment
 
 const app = express();
 app.use(cors());
@@ -20,14 +26,164 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecretkey';
 
 // Initialize Firebase Admin for Dual-DB support
-const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT) : null;
-if (serviceAccount) {
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
+let db_firebase: admin.firestore.Firestore | null = null;
+let firebase_init_error: string | null = null;
+
+const loadFirebaseServiceAccount = (): string | null => {
+  let raw = process.env.FIREBASE_SERVICE_ACCOUNT?.trim() || '';
+
+  if (!raw && process.env.FIREBASE_SERVICE_ACCOUNT_BASE64) {
+    try {
+      raw = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 'base64').toString('utf8');
+      console.log('ℹ️ FIREBASE_SERVICE_ACCOUNT loaded from base64 variable');
+    } catch (err: any) {
+      console.warn('⚠️ FIREBASE_SERVICE_ACCOUNT_BASE64 could not be decoded:', err.message);
+    }
+  }
+
+  if (!raw && process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
+    try {
+      raw = fs.readFileSync(process.env.FIREBASE_SERVICE_ACCOUNT_PATH, 'utf8');
+      console.log(`ℹ️ FIREBASE_SERVICE_ACCOUNT loaded from file path ${process.env.FIREBASE_SERVICE_ACCOUNT_PATH}`);
+    } catch (err: any) {
+      console.warn('⚠️ FIREBASE_SERVICE_ACCOUNT_PATH file read failed:', err.message);
+    }
+  }
+
+  if (!raw) {
+    const paths = [
+      path.join(process.cwd(), 'firebase-service-account.json'),
+      path.join(process.cwd(), 'serviceAccountKey.json'),
+      path.join(process.cwd(), 'firebase-adminsdk.json')
+    ];
+    for (const p of paths) {
+      if (fs.existsSync(p)) {
+        raw = fs.readFileSync(p, 'utf8');
+        console.log(`ℹ️ FIREBASE_SERVICE_ACCOUNT loaded from local file ${p}`);
+        break;
+      }
+    }
+  }
+
+  if (raw && ((raw.startsWith("'") && raw.endsWith("'")) || (raw.startsWith('"') && raw.endsWith('"')))) {
+    raw = raw.slice(1, -1);
+  }
+
+  return raw || null;
+};
+
+const sanitizeServiceAccount = (input: string) => {
+  let candidate = input.trim();
+
+  // Pre-process: fix double-escaped newlines and remove invalid JSON escape sequences
+  // This handles cases where .env vars have \\n instead of \n, or invalid \g etc.
+  const preProcessRawJson = (raw: string): string => {
+    // Replace \\n (double-escaped newline) with actual \n inside JSON strings
+    // We do this on the raw string before JSON.parse
+    return raw.replace(/\\\\n/g, '\\n').replace(/\\\\r/g, '').replace(/\\([^"\\/bfnrtu])/g, '$1');
+  };
+
+  const normalizePrivateKey = (rawKey: string) => {
+    // rawKey at this point may still have literal \n sequences (from JSON string values)
+    let normalized = rawKey.replace(/\\r/g, '').replace(/\\n/g, '\n').trim();
+    if (!normalized.startsWith('-----BEGIN PRIVATE KEY-----')) {
+      // Some keys may omit the header in the value; reformat if needed.
+      normalized = normalized.replace(/\s+/g, '\n');
+    }
+    return normalized;
+  };
+
+  const validateAccount = (parsed: any) => {
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error('Firebase service account is not an object');
+    }
+    if (!parsed.private_key || !parsed.client_email) {
+      throw new Error('Firebase service account is missing required fields (private_key or client_email)');
+    }
+    parsed.private_key = normalizePrivateKey(parsed.private_key);
+    if (!parsed.private_key.includes('-----BEGIN PRIVATE KEY-----') || !parsed.private_key.includes('-----END PRIVATE KEY-----')) {
+      throw new Error('Invalid PEM formatted private_key (missing BEGIN/END markers)');
+    }
+    parsed.private_key = parsed.private_key.replace(/\r/g, '');
+    return parsed;
+  };
+
+  try {
+    const processed = preProcessRawJson(candidate);
+    const parsed = JSON.parse(processed);
+    return validateAccount(parsed);
+  } catch (err) {
+    try {
+      // Try interpreting as base64
+      const maybeBase64 = Buffer.from(candidate, 'base64').toString('utf8');
+      const processedBase64 = preProcessRawJson(maybeBase64);
+      const parsed = JSON.parse(processedBase64);
+      return validateAccount(parsed);
+    } catch {
+      throw new Error('Invalid Firebase service account JSON (not parsable as JSON or base64 JSON)');
+    }
+  }
+};
+
+try {
+  const raw = loadFirebaseServiceAccount();
+  if (!raw) {
+    console.warn('⚠️ FIREBASE_SERVICE_ACCOUNT not found. Firestore features will be disabled.');
+  } else {
+    const serviceAccount = sanitizeServiceAccount(raw);
+    if (!serviceAccount || !serviceAccount.private_key) {
+      throw new Error('Firebase service account is missing private_key.');
+    }
+
+    const app = admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+
+      const databaseId = process.env.FIREBASE_DATABASE_ID;
+      const storageBucket = `${serviceAccount.project_id}.firebasestorage.app`;
+      
+      if (databaseId && databaseId !== '(default)' && databaseId.trim() !== '') {
+        const fs = getFirestore(app);
+        fs.settings({ databaseId, ignoreUndefinedProperties: true });
+        db_firebase = fs;
+        console.log(`✅ Firebase initialized successfully (Database: ${databaseId}, Storage: ${storageBucket})`);
+      } else {
+        const fs = getFirestore(app);
+        fs.settings({ ignoreUndefinedProperties: true });
+        db_firebase = fs;
+        console.log(`✅ Firebase initialized successfully (Database: default, Storage: ${storageBucket})`);
+      }
+      
+      // Initialize Storage
+      admin.storage().bucket(storageBucket);
+    
+    // Start background services after Firebase completes setup
+    startDisasterAlertService();
+  }
+} catch (err: any) {
+  firebase_init_error = err.message;
+  console.error('❌ Firebase initialization error:', err.message);
+  if (err.message.includes('NOT_FOUND')) {
+    console.error('TIP: Check if your Project ID or Database ID is correct in .env');
+  }
+  if (err.message.includes('Invalid PEM formatted message')) {
+    console.error('TIP: Check your private_key string formatting (ensure proper newlines in PEM, e.g. "\\n" escaped in .env).');
+  }
 }
 
-const db_firebase = serviceAccount ? admin.firestore() : null;
+app.get('/api/health', (req, res) => {
+  const sa = process.env.FIREBASE_SERVICE_ACCOUNT;
+  res.json({
+    status: 'ok',
+    firebase: db_firebase ? 'connected' : 'not configured',
+    firebase_apps: admin.apps.length,
+    cwd: process.cwd(),
+    has_sa_var: !!sa,
+    database_id: process.env.FIREBASE_DATABASE_ID || 'default',
+    error: firebase_init_error,
+    timestamp: new Date().toISOString()
+  });
+});
 
 // Free SOS Alert (Email based instead of Twilio)
 const sendFreeSOSAlert = async (to: string, userName: string, message: string, location: string) => {
@@ -110,57 +266,172 @@ const authenticate = (req: any, res: any, next: any) => {
   }
 };
 
-// Get all users (with Firebase/Firestore support)
-app.get('/api/admin/users', authenticate, (req: any, res: any) => {
-  if (req.user.role !== 'admin' && req.user.role !== 'Super Admin') return res.status(403).json({ error: 'Access denied' });
-  
-  // If Firebase is configured, we could primary from there, but for now we sync from SQLite
-  // and enrichment could happen. Logic: SQLite is source of truth for local, Firestore for sync.
-  const users = db.prepare('SELECT id, name, email, role, status, face_confidence, fraud_alert, join_date FROM users').all();
-  res.json(users);
-});
+const isAdmin = (req: any, res: any, next: any) => {
+  if (req.user.role !== 'admin' && req.user.role !== 'Super Admin') {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  next();
+};
 
-// Update user status/role (Sync to Firestore)
-app.put('/api/admin/users/:id', authenticate, async (req: any, res: any) => {
-  if (req.user.role !== 'admin' && req.user.role !== 'Super Admin') return res.status(403).json({ error: 'Access denied' });
-  const { id } = req.params;
-  const { status, role } = req.body;
+const verifyIdentity = async (nidPhoto: string, selfiePhoto: string, profilePhoto?: string) => {
+  if (!nidPhoto || !selfiePhoto) return { success: false, confidence: 0, message: 'Missing documentation photos' };
+  
+  const GENAI_KEY = process.env.GEMINI_API_KEY;
+  if (!GENAI_KEY) {
+    console.warn('⚠️ GEMINI_API_KEY missing, using mock verification');
+    const confidence = 0.95 + (Math.random() * 0.04);
+    return { success: confidence > 0.9, confidence, message: 'Identity verified (MOCK)' };
+  }
 
   try {
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id) as any; // Added 'id' to get()
-    if (!user) return res.status(404).json({ error: 'User not found' });
+    const ai = new GoogleGenAI({ apiKey: GENAI_KEY });
 
-    db.prepare('UPDATE users SET status = ?, role = ? WHERE id = ?').run(status || user.status, role || user.role, id);
+    const prepareImage = (dataUrl: string) => {
+      const parts = dataUrl.split(',');
+      if (parts.length < 2) return null;
+      return {
+        inlineData: {
+          data: parts[parts.length - 1],
+          mimeType: dataUrl.split(';')[0].split(':')[1] || 'image/jpeg'
+        }
+      };
+    };
 
-    // Sync to Firestore if available
-    if (db_firebase) {
-      const userRef = db_firebase.collection('users').doc(user.email);
-      await userRef.set({
-        status: status || user.status,
-        role: role || user.role,
-        updated_at: admin.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
-    }
+    const nidPart = prepareImage(nidPhoto);
+    const selfiePart = prepareImage(selfiePhoto);
+    const profilePart = profilePhoto ? prepareImage(profilePhoto) : null;
 
-    res.json({ success: true });
+    if (!nidPart || !selfiePart) return { success: false, confidence: 0, message: 'Invalid image format' };
+
+    const prompt = "Compare these three images. The first is a live capture (Selfie). The second is an NID card or Birth Certificate. The third (if provided) is a clear profile photo. Determine if the person in the Selfie is the same person as in the document. Provide the response strictly in JSON format: { \"match\": boolean, \"confidence\": number (0.0 to 1.0), \"reason\": \"string\" }";
+
+    const parts: any[] = [{ text: prompt }, { inlineData: selfiePart.inlineData }, { inlineData: nidPart.inlineData }];
+    if (profilePart) parts.push({ inlineData: profilePart.inlineData });
+
+    const result = await (ai as any).models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: [{ parts }]
+    });
+
+    const responseText = result.text || '';
+    const cleanJson = responseText.replace(/```json|```/g, '').trim();
+    const data = JSON.parse(cleanJson);
+
+    return { 
+      success: data.match === true && data.confidence > 0.75, 
+      confidence: data.confidence || 0, 
+      message: data.reason || (data.match ? 'Identity verified successfully' : 'Identity verification failed')
+    };
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('❌ Face Verification Error:', err.message);
+    return { success: false, confidence: 0, message: 'Verification engine error: ' + err.message };
+  }
+};
+
+const uploadBase64ToStorage = async (base64Data: string, path: string): Promise<string | null> => {
+  if (!base64Data || !base64Data.includes('base64,')) return null;
+  if (!db_firebase) return null;
+
+  try {
+    const bucket = admin.storage().bucket();
+    const matches = base64Data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+    if (!matches || matches.length !== 3) return null;
+
+    const contentType = matches[1];
+    const buffer = Buffer.from(matches[2], 'base64');
+    const file = bucket.file(path);
+
+    await file.save(buffer, {
+      metadata: { contentType },
+      public: true
+    });
+
+    // Make the file public and get URL
+    await file.makePublic();
+    return `https://storage.googleapis.com/${bucket.name}/${path}`;
+  } catch (err: any) {
+    console.error('❌ Storage Upload Error:', err.message);
+    return null;
+  }
+};
+
+// Get all users (Firestore Primary)
+app.get('/api/admin/users', authenticate, async (req: any, res: any) => {
+  if (req.user.role !== 'admin' && req.user.role !== 'Super Admin') return res.status(403).json({ error: 'Access denied' });
+  
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+
+  try {
+    const snapshot = await db_firebase.collection('users').get();
+    const users = snapshot.docs.map(doc => {
+      const data = doc.data();
+      
+      // Serialize Firestore Timestamp to ISO string
+      let joinDate = data.join_date;
+      if (joinDate && typeof joinDate.toDate === 'function') {
+        joinDate = joinDate.toDate().toISOString();
+      } else if (joinDate && joinDate._seconds) {
+        joinDate = new Date(joinDate._seconds * 1000).toISOString();
+      }
+
+      return { 
+        id: doc.id, 
+        ...data,
+        join_date: joinDate || new Date().toISOString(),
+        face_confidence: data.verification_confidence || data.face_confidence || 0,
+        status: data.status || 'active'
+      };
+    });
+    res.json(users);
+  } catch (err: any) {
+    console.error('Fetch users error:', err);
+    res.status(500).json({ error: 'Failed to fetch users: ' + err.message });
   }
 });
 
-// Delete User (Auth + Firestore + SQLite)
-app.delete('/api/admin/users/:id', authenticate, async (req: any, res: any) => {
-  if (req.user.role !== 'Super Admin') return res.status(403).json({ error: 'Only Super Admins can delete users' });
-  const { id } = req.params;
+// Update user status/role (Firestore Primary)
+app.put('/api/admin/users/:id', authenticate, async (req: any, res: any) => {
+  if (req.user.role !== 'admin' && req.user.role !== 'Super Admin') return res.status(403).json({ error: 'Access denied' });
+  const { id } = req.params; // In the new system, 'id' will be the email or a unique string
+  const { status, role } = req.body;
+
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
 
   try {
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id) as any; // Added 'id' to get()
-    if (!user) return res.status(404).json({ error: 'User not found' });
+    const userRef = db_firebase.collection('users').doc(id);
+    const userDoc = await userRef.get();
+    
+    if (!userDoc.exists) return res.status(404).json({ error: 'User not found' });
+
+    await userRef.update({
+      status: status || userDoc.data()?.status,
+      role: role || userDoc.data()?.role,
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Firestore update failed: ' + err.message });
+  }
+})// Delete User (Firestore Primary)
+app.delete('/api/admin/users/:id', authenticate, async (req: any, res: any) => {
+  if (req.user.role !== 'Super Admin') return res.status(403).json({ error: 'Only Super Admins can delete users' });
+  const { id } = req.params; // Using email or unique ID
+
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+
+  try {
+    const userRef = db_firebase.collection('users').doc(id);
+    const userDoc = await userRef.get();
+    
+    if (!userDoc.exists) return res.status(404).json({ error: 'User not found' });
+
+    const email = userDoc.data()?.email;
 
     // 1. Delete from Firebase Auth if possible
-    if (serviceAccount) {
+    if (email) {
       try {
-        const authUser = await admin.auth().getUserByEmail(user.email);
+        const authUser = await admin.auth().getUserByEmail(email);
         await admin.auth().deleteUser(authUser.uid);
       } catch (authErr) {
         console.warn('Firebase Auth deletion failed or user not found in Auth:', authErr);
@@ -168,34 +439,27 @@ app.delete('/api/admin/users/:id', authenticate, async (req: any, res: any) => {
     }
 
     // 2. Delete from Firestore
-    if (db_firebase) {
-      await db_firebase.collection('users').doc(user.email).delete();
-    }
-
-    // 3. Delete from Local SQLite
-    db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    await userRef.delete();
 
     res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Firestore deletion failed: ' + err.message });
   }
 });
 
-// AI Queue & Report Flow
+// AI Queue & Report Flow (Already Firestore primary)
 app.get('/api/admin/report-queue', authenticate, async (req: any, res: any) => {
-  if (db_firebase) {
-    try {
-      const snapshot = await db_firebase.collection('ai_analysis_queue').get();
-      const queue = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      return res.json(queue);
-    } catch (err: any) {
-      return res.status(500).json({ error: err.message });
-    }
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  try {
+    const snapshot = await db_firebase.collection('ai_analysis_queue').get();
+    const queue = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    return res.json(queue);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
   }
-  res.json([]);
 });
 
-// Process a report from the queue
+// Process a report from the queue (Firestore Primary)
 app.post('/api/admin/report-queue/:id/process', authenticate, async (req: any, res: any) => {
   if (req.user.role !== 'admin' && req.user.role !== 'Super Admin') return res.status(403).json({ error: 'Access denied' });
   const { id } = req.params;
@@ -205,7 +469,8 @@ app.post('/api/admin/report-queue/:id/process', authenticate, async (req: any, r
 
   try {
     const queueRef = db_firebase.collection('ai_analysis_queue').doc(id);
-    const reportData = (await queueRef.get()).data();
+    const reportSnapshot = await queueRef.get();
+    const reportData = reportSnapshot.data();
     
     if (!reportData) return res.status(404).json({ error: 'Report not found in queue' });
 
@@ -219,20 +484,22 @@ app.post('/api/admin/report-queue/:id/process', authenticate, async (req: any, r
       status: isApproved ? 'approved' : 'rejected'
     });
 
+    // Also update a global "reports" collection for the citizen dashboard
+    await db_firebase.collection('reports').doc(id).set({
+      ...reportData,
+      status: isApproved ? 'approved' : 'rejected',
+      ai_analysis: analysis,
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
     // Remove from queue
     await queueRef.delete();
-
-    // If approved, update local SQLite as well for legacy support
-    if (isApproved) {
-      db.prepare('UPDATE reports SET status = ?, ai_analysis = ? WHERE id = ?').run('approved', JSON.stringify(analysis), id);
-    }
 
     res.json({ success: true, movedTo: targetCollection });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
-
 // Manual Override (Move from fault_history back to admin_reports)
 app.post('/api/admin/fault-history/:id/approve', authenticate, async (req: any, res: any) => {
   if (req.user.role !== 'admin' && req.user.role !== 'Super Admin') return res.status(403).json({ error: 'Access denied' });
@@ -242,7 +509,8 @@ app.post('/api/admin/fault-history/:id/approve', authenticate, async (req: any, 
 
   try {
     const faultRef = db_firebase.collection('fault_history').doc(id);
-    const data = (await faultRef.get()).data();
+    const reportSnapshot = await faultRef.get();
+    const data = reportSnapshot.data();
 
     if (!data) return res.status(404).json({ error: 'Report not found in fault history' });
 
@@ -253,97 +521,289 @@ app.post('/api/admin/fault-history/:id/approve', authenticate, async (req: any, 
       overridden_at: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    await faultRef.delete();
+    // Also update a global "reports" collection for the citizen dashboard
+    await db_firebase.collection('reports').doc(id).set({
+      ...data,
+      status: 'approved',
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
 
-    // Update SQLite
-    db.prepare('UPDATE reports SET status = ? WHERE id = ?').run('approved', id);
+    await faultRef.delete();
 
     res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Manual override failed: ' + err.message });
   }
 });
 
-// Fetch Fault History
-app.get('/api/admin/fault-history', authenticate, async (req: any, res: any) => {
-  if (db_firebase) {
-    const snapshot = await db_firebase.collection('fault_history').get();
-    return res.json(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-  }
-  res.json([]);
-});
-const isAdmin = (req: any, res: any, next: any) => {
-  if (req.user.role !== 'admin' && req.user.role !== 'Super Admin') {
-    return res.status(403).json({ error: 'Forbidden' });
-  }
-  next();
-};
-
-// --- Profile Routes ---
-app.put('/api/auth/profile', authenticate, async (req: any, res) => {
+// Fetch All Admin Reports (Unified)
+app.get('/api/admin/reports', authenticate, isAdmin, async (req: any, res: any) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
   try {
-    const { 
-      name, phone, location, photo_url, profile_photo_url, 
-      parent_number, parent_email, relative_number, relative_email 
-    } = req.body;
-    const userId = req.user.id; 
+    const snapshot = await db_firebase.collection('reports').get();
+    const reports = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    res.json(reports);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to fetch admin reports: ' + err.message });
+  }
+});
 
-    console.log(`[Profile Update Request] User: ${userId}`, { name, phone, photoLength: photo_url?.length });
+// Update Report Status (used by mobile admin panel)
+app.put('/api/admin/reports/:id', authenticate, isAdmin, async (req: any, res: any) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  const { id } = req.params;
+  const { status, admin_notes } = req.body;
+  try {
+    const updateData: any = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
+    if (status) updateData.status = status;
+    if (admin_notes) updateData.admin_notes = admin_notes;
+    await db_firebase.collection('reports').doc(id).update(updateData);
+    res.json({ success: true, message: 'Report updated successfully' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to update report: ' + err.message });
+  }
+});
 
-    if (!userId) return res.status(401).json({ error: 'User ID missing from token' });
+// Bulk AI Refresh
+app.post('/api/admin/reports/refresh-ai', authenticate, isAdmin, async (req: any, res: any) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  const groqKey = process.env.GROQ_API_KEY;
+  if (!groqKey) return res.status(500).json({ error: 'Groq API Key not configured' });
 
-    // 0. Fetch existing user for fallbacks
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as any;
-    if (!user) return res.status(404).json({ error: 'User not found in SQLite' });
+  try {
+    const snapshot = await db_firebase.collection('reports')
+      .where('status', '==', 'pending_ai')
+      .get();
 
-    // 1. Update SQLite
-    const result = db.prepare(`
-        UPDATE users SET 
-          name = ?, phone = ?, location = ?, photo_url = ?, profile_photo_url = ?,
-          parent_number = ?, parent_email = ?, relative_number = ?, relative_email = ? 
-        WHERE id = ?
-      `).run(
-        name || user.name, 
-        phone || user.phone, 
-        location || user.location, 
-        photo_url || user.photo_url, 
-        profile_photo_url || user.profile_photo_url || photo_url || user.photo_url, 
-        parent_number || user.parent_number, 
-        parent_email || user.parent_email, 
-        relative_number || user.relative_number, 
-        relative_email || user.relative_email, 
-        userId
-      );
+    if (snapshot.empty) return res.json({ message: 'No pending reports to analyze.', count: 0 });
 
-    console.log(`[Profile Update Success] Rows changed: ${result.changes}`);
+    const groq = new Groq({ apiKey: groqKey });
+    let processedCount = 0;
 
-    // 2. Sync to Firebase if available
-    if (db_firebase) {
+    for (const doc of snapshot.docs) {
+      const report = doc.data();
+      const reportId = doc.id;
+
+      const prompt = `
+        ACT AS A PROFESSIONAL CITY CONNECT REPORT VALIDATOR.
+        ANALYZE THIS REPORT:
+        TITLE: ${report.title}
+        DESCRIPTION: ${report.description}
+        CATEGORY: ${report.category}
+        
+        TASK:
+        1. Determine if this report is a 'FAKE' or 'INTERNET COLLECTED' photo/issue.
+        2. If it looks like a legitimate citizen-captured photo of a real urban issue, respond with 'PASS'.
+        3. If it is likely fake or generic, respond with 'REJECT'.
+        
+        RESPONSE FORMAT (JSON):
+        {
+          "status": "PASS" or "REJECT",
+          "feedback": "Detailed professional feedback or reason for rejection"
+        }
+      `;
+
       try {
-        const userRef = db_firebase.collection('users').doc(userId.toString());
-        await userRef.set({
-          name: name || user.name, 
-          phone: phone || user.phone, 
-          location: location || user.location, 
-          photo_url: photo_url || user.photo_url, 
-          profile_photo_url: profile_photo_url || user.profile_photo_url || photo_url || user.photo_url,
-          parent_number: parent_number || user.parent_number, 
-          parent_email: parent_email || user.parent_email, 
-          relative_number: relative_number || user.relative_number, 
-          relative_email: relative_email || user.relative_email,
-          updated_at: new Date().toISOString()
-        }, { merge: true });
-        console.log(`[Firebase Sync] Profile updated for user ${userId}`);
-      } catch (fErr: any) {
-        console.warn(`[Firebase Sync Warning] Failed to sync to Firestore: ${fErr.message}`);
+        const completion = await groq.chat.completions.create({
+          messages: [{ role: 'user', content: prompt }],
+          model: 'llama-3.3-70b-versatile',
+          response_format: { type: 'json_object' }
+        });
+
+        const aiResult = JSON.parse(completion.choices[0].message.content || '{}');
+        const isApproved = aiResult.status === 'PASS';
+
+        await db_firebase.collection('reports').doc(reportId).update({
+          status: isApproved ? 'pending_admin' : 'fault_history',
+          ai_feedback: aiResult.feedback,
+          processedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        processedCount++;
+      } catch (err: any) {
+        console.error(`Error processing report ${reportId}:`, err.message);
       }
     }
 
-    const updatedUser = db.prepare('SELECT id, name, email, role, phone, location, photo_url, profile_photo_url FROM users WHERE id = ?').get(userId);
-    res.json({ success: true, message: 'Profile updated successfully!', user: updatedUser });
+    res.json({ success: true, count: processedCount });
   } catch (err: any) {
-    console.error('Profile Update Error:', err.message);
-    res.status(500).json({ error: 'Failed to update profile' });
+    res.status(500).json({ error: 'Bulk AI refresh failed: ' + err.message });
+  }
+});
+
+// Manual Approve
+app.post('/api/admin/reports/:id/manual-approve', authenticate, isAdmin, async (req: any, res: any) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  const { id } = req.params;
+
+  try {
+    await db_firebase.collection('reports').doc(id).update({
+      status: 'pending_admin',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      manual_approval: true
+    });
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Manual approval failed: ' + err.message });
+  }
+});
+
+// Update Report Status (Admin)
+app.put('/api/admin/reports/:id', authenticate, async (req: any, res: any) => {
+  if (req.user.role !== 'admin' && req.user.role !== 'Super Admin') return res.status(403).json({ error: 'Access denied' });
+  const { id } = req.params;
+  const { status, admin_notes } = req.body;
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+
+  try {
+    const updateData: any = { 
+      status, 
+      updated_at: admin.firestore.FieldValue.serverTimestamp() 
+    };
+    if (admin_notes) updateData.admin_notes = admin_notes;
+
+    // Update in admin_reports
+    await db_firebase.collection('admin_reports').doc(id).update(updateData);
+    
+    // Sync to user reports collection
+    await db_firebase.collection('reports').doc(id).update(updateData);
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to update report: ' + err.message });
+  }
+});
+
+// Save AI Analysis to Report
+app.post('/api/admin/reports/:id/analyze', authenticate, async (req: any, res: any) => {
+  if (req.user.role !== 'admin' && req.user.role !== 'Super Admin') return res.status(403).json({ error: 'Access denied' });
+  const { id } = req.params;
+  const { analysis } = req.body;
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+
+  try {
+    await db_firebase.collection('admin_reports').doc(id).update({
+      ai_analysis: analysis,
+      analyzed_at: admin.firestore.FieldValue.serverTimestamp()
+    });
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to save analysis: ' + err.message });
+  }
+});
+
+// Initiate Action for Report
+app.post('/api/admin/reports/:id/initiate', authenticate, async (req: any, res: any) => {
+  if (req.user.role !== 'admin' && req.user.role !== 'Super Admin') return res.status(403).json({ error: 'Access denied' });
+  const { id } = req.params;
+  const { notes } = req.body;
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+
+  try {
+    const reportRef = db_firebase.collection('admin_reports').doc(id);
+    await reportRef.update({ status: 'initiated' });
+    await db_firebase.collection('reports').doc(id).update({ status: 'initiated' });
+
+    await db_firebase.collection('report_status_history').add({
+      report_id: id,
+      status: 'initiated',
+      notes: notes || 'Action initiated by administrator.',
+      created_at: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to initiate action: ' + err.message });
+  }
+});
+
+// Fetch Fault History (Firestore Primary)
+app.get('/api/admin/fault-history', authenticate, async (req: any, res: any) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  try {
+    const snapshot = await db_firebase.collection('fault_history').get();
+    return res.json(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to fetch fault history: ' + err.message });
+  }
+});
+
+// --- Profile Routes ---
+app.put('/api/auth/profile', authenticate, async (req: any, res) => {
+  const { 
+    name, phone, location, bio, photo_url, profile_photo_url, 
+    parent_number, parent_email, relative_number, relative_email 
+  } = req.body;
+  const email = req.user.email; 
+
+  if (!email) return res.status(401).json({ error: 'User email missing from token' });
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+
+  try {
+    const userRef = db_firebase.collection('users').doc(email);
+    const userDoc = await userRef.get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: 'User profile not found' });
+    }
+
+    const userData = userDoc.data() || {};
+    
+    // Try to upload photos to Firebase Storage; fall back to storing base64 directly if storage fails
+    let finalPhotoUrl: string | null = photo_url || userData.photo_url || null;
+    let finalProfilePhotoUrl: string | null = profile_photo_url || userData.profile_photo_url || null;
+
+    if (photo_url && photo_url.includes('base64,')) {
+      const uploaded = await uploadBase64ToStorage(photo_url, `users/${email}/photo_${Date.now()}.jpg`);
+      // If storage upload succeeds use the URL, otherwise keep the base64 string (max 500KB)
+      finalPhotoUrl = uploaded || photo_url.substring(0, 500000);
+    }
+    if (profile_photo_url && profile_photo_url.includes('base64,')) {
+      const uploaded = await uploadBase64ToStorage(profile_photo_url, `users/${email}/profile_${Date.now()}.jpg`);
+      finalProfilePhotoUrl = uploaded || profile_photo_url.substring(0, 500000);
+    }
+
+    const updatedFields: any = {
+      name: name || userData.name,
+      phone: phone !== undefined ? phone : (userData.phone || ''),
+      location: location !== undefined ? location : (userData.location || ''),
+      bio: bio !== undefined ? bio : (userData.bio || ''),
+      parent_number: parent_number !== undefined ? parent_number : (userData.parent_number || ''),
+      parent_email: parent_email !== undefined ? parent_email : (userData.parent_email || ''),
+      relative_number: relative_number !== undefined ? relative_number : (userData.relative_number || ''),
+      relative_email: relative_email !== undefined ? relative_email : (userData.relative_email || ''),
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    // Always update photo fields if we have a value (URL or base64)
+    if (finalPhotoUrl) {
+      updatedFields.photo_url = finalPhotoUrl;
+    }
+    if (finalProfilePhotoUrl) {
+      updatedFields.profile_photo_url = finalProfilePhotoUrl;
+    } else if (finalPhotoUrl) {
+      // Use the main photo as profile photo fallback
+      updatedFields.profile_photo_url = finalPhotoUrl;
+    }
+
+    await userRef.update(updatedFields);
+    
+    await db_firebase.collection('activity_logs').add({
+      user_email: email,
+      user_name: userData.name || name || email,
+      action: 'profile_updated',
+      details: 'User updated profile information',
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    // Return clean data (fetch from DB to get real values, not FieldValue objects)
+    const freshDoc = await userRef.get();
+    const freshData = freshDoc.data() as any;
+    const { password: _pw, ...safeData } = freshData;
+    res.json({ success: true, user: { id: email, ...safeData, role: req.user.role } });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to update profile: ' + err.message });
   }
 });
 
@@ -351,339 +811,480 @@ app.put('/api/auth/profile', authenticate, async (req: any, res) => {
 app.post('/api/auth/send-code', async (req, res) => {
   const { email, type } = req.body;
   const code = generateCode();
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 minutes
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
 
   try {
-    db.prepare('DELETE FROM verification_codes WHERE email = ? AND type = ?').run(email, type);
-    db.prepare('INSERT INTO verification_codes (email, code, type, expires_at) VALUES (?, ?, ?, ?)').run(email, code, type, expiresAt);
-    
-    const emailResult = await sendEmail(email, `Your verification code is ${code}`, `Your verification code for ${type} is: ${code}. It expires in 10 minutes.`);
-    
-    console.log(`Email result for ${email}:`, emailResult);
+    const codeId = `${email}_${type}`;
+    await db_firebase.collection('verification_codes').doc(codeId).set({
+      email,
+      code,
+      type,
+      expires_at: admin.firestore.Timestamp.fromDate(expiresAt),
+      created_at: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    const emailResult = await sendEmail(email, `Your CityConnect verification code: ${code}`, `Your code is: ${code}. It expires in 10 minutes.`);
     
     const responseData: any = { success: true };
     if (!emailResult.success) {
-      responseData.warning = `Email could not be sent: ${emailResult.error}. Please check your credentials in the Secrets panel.`;
-      // Always show debug code if email fails to help user proceed
+      responseData.warning = `Email could not be sent.`;
       responseData.debugCode = code; 
     }
     
     res.json(responseData);
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to process request' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to send code: ' + err.message });
   }
 });
 
-app.post('/api/auth/verify-code', async (req, res) => {
+app.post('/api/auth/verify-code', async (req: any, res) => {
   const { email, code, type, checkOnly } = req.body;
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+
   try {
-    const record = db.prepare('SELECT * FROM verification_codes WHERE email = ? AND code = ? AND type = ? AND expires_at > ?').get(email, code, type, new Date().toISOString()) as any;
-    if (!record) {
+    const codeId = `${email}_${type}`;
+    const codeDoc = await db_firebase.collection('verification_codes').doc(codeId).get();
+    
+    if (!codeDoc.exists || codeDoc.data()?.code !== code || codeDoc.data()?.expires_at.toDate() < new Date()) {
       return res.status(400).json({ error: 'Code does not match or has expired' });
     }
+
     if (!checkOnly) {
-      db.prepare('DELETE FROM verification_codes WHERE id = ?').run(record.id);
+      await db_firebase.collection('verification_codes').doc(codeId).delete();
     }
+    
     res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: 'Verification failed' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Verification failed: ' + err.message });
   }
 });
 
 app.post('/api/auth/verify-face', async (req, res) => {
-  const { live_photo, doc_photo } = req.body;
-  try {
-    // In a real app, we would use a face recognition API here.
-    // For this app, we will use Gemini to compare the two images.
-    // This is a professional way to implement it using available tools.
-    res.json({ success: true, confidence: 0.98, message: 'Face matched successfully' });
-  } catch (err) {
-    res.status(500).json({ error: 'Face verification failed' });
+  const { doc_photo, selfie_photo, profile_photo, live_photo } = req.body;
+  // Handle various naming conventions from different screens
+  const doc = doc_photo || req.body.nid_photo;
+  const selfie = live_photo || selfie_photo;
+  const profile = profile_photo;
+
+  if (!doc || !selfie) {
+    return res.status(400).json({ success: false, message: 'Missing photos for verification' });
   }
+
+  const result = await verifyIdentity(doc, selfie, profile);
+  res.json(result);
 });
 
 app.post('/api/auth/signup', async (req, res) => {
   const { name, email, password, code } = req.body;
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+
   try {
-    // Verify code first
-    const record = db.prepare("SELECT * FROM verification_codes WHERE email = ? AND code = ? AND type = 'signup' AND expires_at > ?").get(email, code, new Date().toISOString()) as any;
-    if (!record) {
-      return res.status(400).json({ error: 'Code does not match or has expired' });
+    // 1. Verify code
+    const codeId = `${email}_signup`;
+    const codeDoc = await db_firebase.collection('verification_codes').doc(codeId).get();
+    
+    if (!codeDoc.exists || codeDoc.data()?.code !== code || codeDoc.data()?.expires_at.toDate() < new Date()) {
+      return res.status(400).json({ error: 'Invalid or expired verification code' });
     }
-    db.prepare('DELETE FROM verification_codes WHERE id = ?').run(record.id);
+
+    // 2. Already verified? Logic check
+    const userRef = db_firebase.collection('users').doc(email);
+    if ((await userRef.get()).exists) {
+      return res.status(400).json({ error: 'Email already exists' });
+    }
+
+    // 3. Clear code
+    await db_firebase.collection('verification_codes').doc(codeId).delete();
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const { nid_number, birth_certificate_number, photo_url, profile_photo_url, location, phone } = req.body;
+    const { 
+      nid_number, birth_certificate_number, photo_url, profile_photo_url, 
+      location, phone, nid_photo, selfie_photo, live_photo_url 
+    } = req.body;
 
-    // Check for duplicate documents
-    if (nid_number) {
-      const existing = db.prepare('SELECT id FROM users WHERE nid_number = ?').get(nid_number);
-      if (existing) return res.status(400).json({ error: 'NID already registered with another account' });
-    }
-    if (birth_certificate_number) {
-      const existing = db.prepare('SELECT id FROM users WHERE birth_certificate_number = ?').get(birth_certificate_number);
-      if (existing) return res.status(400).json({ error: 'Birth Certificate already registered with another account' });
-    }
+    // Standardize photo fields across Web/Mobile
+    const finalNidPhoto = nid_photo || photo_url;
+    const finalSelfiePhoto = selfie_photo || live_photo_url;
+    const finalProfilePhoto = profile_photo_url || photo_url;
 
-    const stmt = db.prepare('INSERT INTO users (name, email, password, nid_number, birth_certificate_number, photo_url, profile_photo_url, location, phone, is_verified) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-    const info = stmt.run(name, email, hashedPassword, nid_number || null, birth_certificate_number || null, photo_url || null, profile_photo_url || null, location || null, phone || null, 1);
+    // 4. Identity Verification (Done with base64 for AI analysis)
+    const idResult = await verifyIdentity(finalNidPhoto, finalSelfiePhoto, finalProfilePhoto);
+
+    // 5. Upload images to Storage to avoid Firestore limits
+    console.log('📤 Uploading documents for:', email);
+    const [nidUrl, selfieUrl, profileUrl] = await Promise.all([
+      uploadBase64ToStorage(finalNidPhoto, `users/${email}/nid_${Date.now()}.jpg`),
+      uploadBase64ToStorage(finalSelfiePhoto, `users/${email}/selfie_${Date.now()}.jpg`),
+      uploadBase64ToStorage(finalProfilePhoto, `users/${email}/profile_${Date.now()}.jpg`)
+    ]);
+
+    const userData = {
+      name,
+      email,
+      password: hashedPassword,
+      role: 'citizen',
+      status: 'active',
+      phone: phone || null,
+      location: location || null,
+      photo_url: profileUrl || null,
+      profile_photo_url: profileUrl || null,
+      nid_number: nid_number || null,
+      birth_certificate_number: birth_certificate_number || null,
+      nid_photo_url: nidUrl || null,
+      selfie_photo_url: selfieUrl || null,
+      is_verified: idResult.success,
+      verification_confidence: idResult.confidence,
+      join_date: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    await userRef.set(userData);
+
+    if (!idResult.success) {
+      // Log to registration_faults
+      await db_firebase.collection('registration_faults').add({
+        user_email: email,
+        reason: idResult.message,
+        confidence: idResult.confidence,
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+      });
+    }
     
-    const userId = Number(info.lastInsertRowid);
-    db.prepare('INSERT INTO activity_logs (user_id, action, details) VALUES (?, ?, ?)').run(userId, 'signup', 'User registered');
-    
-    const token = jwt.sign({ id: userId, email, role: 'citizen' }, JWT_SECRET);
-    res.json({ token, user: { id: userId, name, email, role: 'citizen' } });
+    // Log activity in Firestore
+    await db_firebase.collection('activity_logs').add({
+      user_email: email,
+      action: 'signup',
+      details: idResult.success ? 'User registered and verified' : 'User registered (Verification Pending)',
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    const token = jwt.sign({ id: email, email, role: 'citizen' }, JWT_SECRET);
+    res.json({ 
+      token, 
+      user: { id: email, name, email, role: 'citizen', is_verified: idResult.success },
+      verification: idResult
+    });
   } catch (err: any) {
-    console.error('Signup error:', err);
-    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-      res.status(400).json({ error: 'Email already exists' });
-    } else {
-      res.status(500).json({ error: `Server error: ${err.message || 'Unknown error'}` });
-    }
+    res.status(500).json({ error: 'Signup failed: ' + err.message });
   }
 });
 
 app.post('/api/auth/check-document', async (req, res) => {
   const { nid_number, birth_certificate_number } = req.body;
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+
   try {
     if (nid_number) {
-      const existing = db.prepare('SELECT id FROM users WHERE nid_number = ?').get(nid_number);
-      if (existing) return res.json({ exists: true, message: 'NID already registered' });
+      const snapshot = await db_firebase.collection('users').where('nid_number', '==', nid_number).get();
+      if (!snapshot.empty) return res.json({ exists: true, message: 'NID already registered' });
     }
     if (birth_certificate_number) {
-      const existing = db.prepare('SELECT id FROM users WHERE birth_certificate_number = ?').get(birth_certificate_number);
-      if (existing) return res.json({ exists: true, message: 'Birth Certificate already registered' });
+      const snapshot = await db_firebase.collection('users').where('birth_certificate_number', '==', birth_certificate_number).get();
+      if (!snapshot.empty) return res.json({ exists: true, message: 'Birth Certificate already registered' });
     }
     res.json({ exists: false });
-  } catch (err) {
-    res.status(500).json({ error: 'Database error' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Database check failed: ' + err.message });
   }
 });
 
 app.post('/api/auth/forgot-password', async (req, res) => {
   const { email } = req.body;
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
-  if (!user) {
-    return res.status(404).json({ error: 'User not found' });
-  }
-
-  const code = generateCode();
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
 
   try {
-    db.prepare("DELETE FROM verification_codes WHERE email = ? AND type = 'recovery'").run(email);
-    db.prepare("INSERT INTO verification_codes (email, code, type, expires_at) VALUES (?, ?, 'recovery', ?)").run(email, code, expiresAt);
-    
+    const userDoc = await db_firebase.collection('users').doc(email).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const code = generateCode();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    const codeId = `${email}_recovery`;
+
+    await db_firebase.collection('verification_codes').doc(codeId).set({
+      email,
+      code,
+      type: 'recovery',
+      expires_at: admin.firestore.Timestamp.fromDate(expiresAt),
+      created_at: admin.firestore.FieldValue.serverTimestamp()
+    });
+
     const emailResult = await sendEmail(email, `Password reset code: ${code}`, `Your password reset code is: ${code}. It expires in 10 minutes.`);
-    
-    console.log(`Recovery email result for ${email}:`, emailResult);
     
     const responseData: any = { success: true };
     if (!emailResult.success) {
-      responseData.warning = `Email could not be sent: ${emailResult.error}. Please check your credentials in the Secrets panel.`;
+      responseData.warning = `Email could not be sent.`;
       responseData.debugCode = code;
     }
     
     res.json(responseData);
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to send recovery code' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to process request: ' + err.message });
   }
 });
 
 app.post('/api/auth/reset-password', async (req, res) => {
   const { email, code, newPassword } = req.body;
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+
   try {
-    const record = db.prepare("SELECT * FROM verification_codes WHERE email = ? AND code = ? AND type = 'recovery' AND expires_at > ?").get(email, code, new Date().toISOString()) as any;
-    if (!record) {
+    const codeId = `${email}_recovery`;
+    const codeDoc = await db_firebase.collection('verification_codes').doc(codeId).get();
+    
+    if (!codeDoc.exists || codeDoc.data()?.code !== code || codeDoc.data()?.expires_at.toDate() < new Date()) {
       return res.status(400).json({ error: 'Code does not match or has expired' });
     }
-    db.prepare('DELETE FROM verification_codes WHERE id = ?').run(record.id);
+
+    // Clear code
+    await db_firebase.collection('verification_codes').doc(codeId).delete();
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
-    db.prepare('UPDATE users SET password = ? WHERE email = ?').run(hashedPassword, email);
+    await db_firebase.collection('users').doc(email).update({
+      password: hashedPassword,
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    });
     
     res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to reset password' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to reset password: ' + err.message });
   }
 });
 
-app.put('/api/auth/profile', authenticate, async (req: any, res) => {
-  const { name, phone, location, photo_url, profile_photo_url, parent_number, parent_email, relative_number, relative_email } = req.body;
-  
-  try {
-    const updateClauses = [];
-    const params = [];
-    
-    if (name !== undefined) { updateClauses.push("name = ?"); params.push(name); }
-    if (phone !== undefined) { updateClauses.push("phone = ?"); params.push(phone); }
-    if (location !== undefined) { updateClauses.push("location = ?"); params.push(location); }
-    if (photo_url !== undefined) { updateClauses.push("photo_url = ?"); params.push(photo_url); }
-    if (profile_photo_url !== undefined) { updateClauses.push("profile_photo_url = ?"); params.push(profile_photo_url); }
-    if (parent_number !== undefined) { updateClauses.push("parent_number = ?"); params.push(parent_number); }
-    if (parent_email !== undefined) { updateClauses.push("parent_email = ?"); params.push(parent_email); }
-    if (relative_number !== undefined) { updateClauses.push("relative_number = ?"); params.push(relative_number); }
-    if (relative_email !== undefined) { updateClauses.push("relative_email = ?"); params.push(relative_email); }
-    
-    if (updateClauses.length > 0) {
-      params.push(req.user.id);
-      db.prepare(`UPDATE users SET ${updateClauses.join(', ')} WHERE id = ?`).run(...params);
-      db.prepare('INSERT INTO activity_logs (user_id, action, details) VALUES (?, ?, ?)')
-        .run(req.user.id, 'profile_updated', 'Profile updated successfully');
-    }
-    
-    res.json({ success: true, message: 'Profile updated successfully' });
-  } catch (err: any) {
-    console.error('Profile update error:', err);
-    res.status(500).json({ error: 'Failed to update profile' });
-  }
-});
 
 app.post('/api/auth/login', async (req, res) => {
-  const { email, password, isAdminLogin } = req.body;
-  
-  // 1. Find the user
-  let user = db.prepare('SELECT * FROM users WHERE email = ?').get(email) as any;
-  
-  // 2. Bootstrap admin if it's the first time and credentials match
-  if (!user && email === 'meshoron53@gmail.com' && password === 'shoron4545@') {
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const stmt = db.prepare('INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)');
-    const info = stmt.run('Super Admin', email, hashedPassword, 'Super Admin');
-    user = { id: info.lastInsertRowid, name: 'Super Admin', email, role: 'Super Admin', status: 'active' };
-  }
+  let { email, password, isAdminLogin } = req.body;
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
 
-  // 3. Validate credentials
-  if (!user || !(await bcrypt.compare(password, user.password))) {
-    return res.status(400).json({ error: 'Invalid credentials' });
-  }
+  try {
+    if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
+    email = email.trim().toLowerCase();
 
-  if (user.status === 'blocked') {
-    return res.status(403).json({ error: 'Account is blocked' });
-  }
+    const userRef = db_firebase.collection('users').doc(email);
+    let userDoc = await userRef.get();
+    let user = userDoc.data() as any;
 
-  if (user.scheduled_deletion_at) {
-    const deletionDate = new Date(user.scheduled_deletion_at);
-    if (deletionDate > new Date()) {
-      return res.status(403).json({ 
-        error: 'This account is scheduled for deletion.', 
-        isScheduledForDeletion: true,
-        deletionDate: user.scheduled_deletion_at
-      });
+    // 1. Bootstrap admin if it's the first time and credentials match
+    if (!userDoc.exists && email === 'meshoron53@gmail.com' && password === 'shoron4545@') {
+      const hashedPassword = await bcrypt.hash(password, 10);
+      const userData = {
+        name: 'Super Admin',
+        email,
+        password: hashedPassword,
+        role: 'Super Admin',
+        status: 'active',
+        join_date: admin.firestore.FieldValue.serverTimestamp()
+      };
+      await userRef.set(userData);
+      user = userData;
+    }
+
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+      return res.status(400).json({ error: 'Invalid credentials' });
+    }
+
+    if (user.status === 'blocked') {
+      return res.status(403).json({ error: 'Account is blocked' });
+    }
+
+    if (user.scheduled_deletion_at) {
+      const deletionDate = user.scheduled_deletion_at.toDate();
+      if (deletionDate > new Date()) {
+        return res.status(403).json({ 
+          error: 'This account is scheduled for deletion.', 
+          isScheduledForDeletion: true,
+          deletionDate: user.scheduled_deletion_at
+        });
+      }
+    }
+
+    let sessionRole = user.role;
+    if (isAdminLogin) {
+      if (user.role !== 'admin' && user.role !== 'Super Admin' && user.email !== 'meshoron53@gmail.com') {
+        return res.status(401).json({ error: 'Unauthorized access. This portal is for administrators only.' });
+      }
     } else {
-      // Actually deleted (should have been cleaned up, but safety check)
-      return res.status(403).json({ error: 'Account has been deleted' });
+      sessionRole = 'citizen';
     }
-  }
 
-  // 4. Determine session role based on portal
-  let sessionRole = user.role;
-  
-  if (isAdminLogin) {
-    // Only allow actual admins to use the admin login
-    if (user.role !== 'admin' && user.role !== 'Super Admin' && user.email !== 'meshoron53@gmail.com') {
-      return res.status(401).json({ error: 'Unauthorized access. This portal is for administrators only.' });
+    const token = jwt.sign({ id: email, email: user.email, role: sessionRole }, JWT_SECRET);
+    
+    await db_firebase.collection('activity_logs').add({
+      user_email: email,
+      action: 'login',
+      details: isAdminLogin ? 'Admin portal login' : 'User portal login',
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({ 
+      token, 
+      user: { 
+        id: email, 
+        name: user.name, 
+        email: user.email, 
+        role: sessionRole,
+        photo_url: user.photo_url,
+        profile_photo_url: user.profile_photo_url,
+        phone: user.phone,
+        location: user.location
+      } 
+    });
+  } catch (err: any) {
+    console.error(`[Login Error] Email: ${req.body.email}, Error:`, err.message);
+    let errorMessage = 'Login failed';
+    if (err.message.includes('NOT_FOUND')) {
+      errorMessage += ': Database connectivity issue (NOT_FOUND). Please check server logs.';
+    } else {
+      errorMessage += ': ' + err.message;
     }
-    // If they are an admin, they get their full role
-  } else {
-    // On the user portal, EVERYONE is a citizen, even if they are an admin in the DB
-    sessionRole = 'citizen';
+    res.status(500).json({ error: errorMessage });
   }
-
-  const token = jwt.sign({ id: user.id, email: user.email, role: sessionRole }, JWT_SECRET);
-  db.prepare('INSERT INTO activity_logs (user_id, action, details) VALUES (?, ?, ?)').run(user.id, 'login', isAdminLogin ? 'Admin portal login' : 'User portal login');
-  
-  res.json({ 
-    token, 
-    user: { id: user.id, name: user.name, email: user.email, role: sessionRole } 
-  });
 });
 
-app.get('/api/auth/me', authenticate, (req: any, res) => {
-  const user = db.prepare('SELECT id, name, email, role, status, phone, location, photo_url, profile_photo_url, parent_number, relative_number, scheduled_deletion_at FROM users WHERE id = ?').get(req.user.id) as any;
-  if (user) {
-    // Use the role from the token to maintain session context (Admin vs Citizen mode)
-    user.role = req.user.role;
+app.get('/api/auth/me', authenticate, async (req: any, res) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+
+  try {
+    const userDoc = await db_firebase.collection('users').doc(req.user.email).get();
+    if (userDoc.exists) {
+      const rawData = userDoc.data() as any;
+      // Strip sensitive fields before sending to client
+      const { password: _pw, ...safeData } = rawData;
+      const user = { id: req.user.email, ...safeData };
+      // Maintain session role from token
+      user.role = req.user.role;
+      res.json({ user });
+    } else {
+      res.status(404).json({ error: 'User not found' });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to fetch user: ' + err.message });
   }
-  res.json({ user });
 });
 
 
 app.post('/api/auth/delete-account', authenticate, async (req: any, res) => {
   const { password } = req.body;
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id) as any;
-  
-  if (!user || !(await bcrypt.compare(password, user.password))) {
-    return res.status(400).json({ error: 'Invalid password' });
-  }
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
 
-  const scheduledDate = new Date();
-  scheduledDate.setDate(scheduledDate.getDate() + 30);
-  
-  db.prepare('UPDATE users SET scheduled_deletion_at = ? WHERE id = ?').run(scheduledDate.toISOString(), req.user.id);
-  db.prepare('INSERT INTO activity_logs (user_id, action, details) VALUES (?, ?, ?)').run(req.user.id, 'account_deletion_scheduled', 'Account scheduled for deletion in 30 days');
-  
-  res.json({ success: true, scheduledDate: scheduledDate.toISOString() });
+  try {
+    const userRef = db_firebase.collection('users').doc(req.user.email);
+    const userSnapshot = await userRef.get();
+    const user = userSnapshot.data();
+    
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+      return res.status(400).json({ error: 'Invalid password' });
+    }
+
+    const scheduledDate = new Date();
+    scheduledDate.setDate(scheduledDate.getDate() + 30); // 30 days from now
+
+    await userRef.update({
+      scheduled_deletion_at: admin.firestore.Timestamp.fromDate(scheduledDate)
+    });
+
+    await db_firebase.collection('activity_logs').add({
+      user_email: req.user.email,
+      action: 'account_deletion_scheduled',
+      details: `Scheduled for ${scheduledDate.toISOString()}`,
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({ success: true, scheduledDate: scheduledDate.toISOString() });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to schedule deletion: ' + err.message });
+  }
 });
 
-app.post('/api/auth/cancel-deletion', authenticate, (req: any, res) => {
-  db.prepare('UPDATE users SET scheduled_deletion_at = NULL WHERE id = ?').run(req.user.id);
-  db.prepare('INSERT INTO activity_logs (user_id, action, details) VALUES (?, ?, ?)').run(req.user.id, 'account_deletion_cancelled', 'Account deletion cancelled');
-  res.json({ success: true });
+app.post('/api/auth/cancel-deletion', authenticate, async (req: any, res) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  try {
+    await db_firebase.collection('users').doc(req.user.email).update({
+      scheduled_deletion_at: null
+    });
+    await db_firebase.collection('activity_logs').add({
+      user_email: req.user.email,
+      action: 'account_deletion_cancelled',
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to cancel deletion: ' + err.message });
+  }
 });
 
 app.post('/api/auth/cancel-deletion-unauthenticated', async (req, res) => {
   const { email, password } = req.body;
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email) as any;
-  
-  if (!user || !(await bcrypt.compare(password, user.password))) {
-    return res.status(400).json({ error: 'Invalid credentials' });
-  }
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
 
-  db.prepare('UPDATE users SET scheduled_deletion_at = NULL WHERE id = ?').run(user.id);
-  db.prepare('INSERT INTO activity_logs (user_id, action, details) VALUES (?, ?, ?)').run(user.id, 'account_deletion_cancelled', 'Account deletion cancelled via login page');
-  res.json({ success: true });
+  try {
+    const userRef = db_firebase.collection('users').doc(email);
+    const userSnapshot = await userRef.get();
+    const user = userSnapshot.data();
+    
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+      return res.status(400).json({ error: 'Invalid credentials' });
+    }
+
+    await userRef.update({ scheduled_deletion_at: null });
+    await db_firebase.collection('activity_logs').add({
+      user_email: email,
+      action: 'account_deletion_cancelled',
+      details: 'Cancelled via login page',
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to cancel deletion: ' + err.message });
+  }
 });
 
 // --- SOS Routes ---
 app.post('/api/sos/alert', authenticate, async (req: any, res) => {
   const { message, location } = req.body;
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id) as any;
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
 
-  if (!user) return res.status(404).json({ error: 'User not found' });
+  try {
+    const userDoc = await db_firebase.collection('users').doc(req.user.email).get();
+    const user = userDoc.data();
 
-  const alertMsg = message || 'I am in an emergency! Please help me.';
-  const locMsg = location || user.location || 'Unknown Location';
-  
-  // Alert Parent & Relative (Free Email)
-  const recipients = [user.email];
-  if (user.parent_email) recipients.push(user.parent_email);
-  if (user.relative_email) recipients.push(user.relative_email);
+    if (!user) return res.status(404).json({ error: 'User not found' });
 
-  for (const email of recipients) {
-    if (email) {
-      await sendFreeSOSAlert(email, user.name, alertMsg, locMsg);
+    const alertMsg = message || 'I am in an emergency! Please help me.';
+    const locMsg = location || user.location || 'Unknown Location';
+    
+    // Alert Parent & Relative (Free Email)
+    const recipients = [user.email];
+    if (user.parent_email) recipients.push(user.parent_email);
+    if (user.relative_email) recipients.push(user.relative_email);
+
+    for (const email of recipients) {
+      if (email) {
+        await sendFreeSOSAlert(email, user.name, alertMsg, locMsg);
+      }
     }
-  }
 
-  // Sync to Firebase (Dual DB Logic)
-  if (db_firebase) {
-    try {
-      await db_firebase.collection('sos_alerts').add({
-        userId: user.id,
-        userName: user.name,
-        message: alertMsg,
-        location: locMsg,
-        timestamp: admin.firestore.FieldValue.serverTimestamp()
-      });
-    } catch (e) {
-      console.error('Firebase Sync Error:', e);
-    }
-  }
+    const sosId = `sos_${Date.now()}`;
+    await db_firebase.collection('sos_alerts').doc(sosId).set({
+      user_email: user.email,
+      userName: user.name,
+      message: alertMsg,
+      location: locMsg,
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
 
-  db.prepare('INSERT INTO activity_logs (user_id, action, details) VALUES (?, ?, ?)').run(req.user.id, 'sos_alert_sent', `Free SOS alert sent. Location: ${locMsg}`);
-  
-  res.json({ success: true, message: 'Emergency alerts sent via secure channels.' });
+    await db_firebase.collection('activity_logs').add({
+      user_email: user.email,
+      action: 'sos_alert_sent',
+      details: `Location: ${locMsg}`,
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+    
+    res.json({ success: true, message: 'Emergency alerts sent via secure channels.' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'SOS Alert failed: ' + err.message });
+  }
 });
 
 // Chat Routes ---
@@ -844,196 +1445,392 @@ app.post('/api/gemini/generate', authenticate, async (req: any, res) => {
   }
 });
 
-app.get('/api/chat/history', authenticate, (req: any, res) => {
-  const history = db.prepare('SELECT * FROM chat_history WHERE user_id = ? ORDER BY created_at ASC').all(req.user.id);
-  res.json(history);
+app.get('/api/chat/history', authenticate, async (req: any, res) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  try {
+    const snapshot = await db_firebase.collection('chat_history')
+      .where('user_email', '==', req.user.email)
+      .orderBy('timestamp', 'asc')
+      .get();
+    const history = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    res.json(history);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to fetch history: ' + err.message });
+  }
 });
 
-app.post('/api/chat/message', authenticate, (req: any, res) => {
+app.post('/api/chat/message', authenticate, async (req: any, res) => {
   const { role, content, file_url, file_type } = req.body;
-  db.prepare('INSERT INTO chat_history (user_id, role, content, file_url, file_type) VALUES (?, ?, ?, ?, ?)')
-    .run(req.user.id, role, content, file_url, file_type);
-  res.json({ success: true });
-});
-
-app.delete('/api/chat/history', authenticate, (req: any, res) => {
-  db.prepare('DELETE FROM chat_history WHERE user_id = ?').run(req.user.id);
-  res.json({ success: true });
-});
-
-// --- User Routes ---
-app.get('/api/reports', authenticate, (req: any, res) => {
-  const reports = db.prepare('SELECT * FROM reports WHERE user_id = ? ORDER BY created_at DESC').all(req.user.id);
-  res.json(reports);
-});
-
-app.get('/api/reports/:id/history', authenticate, (req: any, res) => {
-  const history = db.prepare('SELECT * FROM report_status_history WHERE report_id = ? ORDER BY created_at ASC').all(req.params.id);
-  res.json(history);
-});
-
-app.post('/api/reports', authenticate, (req: any, res) => {
-  const { title, description, category, location, image_url, ai_analysis } = req.body;
-  const stmt = db.prepare('INSERT INTO reports (user_id, title, description, category, location, image_url, ai_analysis) VALUES (?, ?, ?, ?, ?, ?, ?)');
-  const info = stmt.run(req.user.id, title, description, category, location, image_url, ai_analysis);
-  const reportId = info.lastInsertRowid;
-  
-  // Initial status history
-  db.prepare('INSERT INTO report_status_history (report_id, status, notes) VALUES (?, ?, ?)').run(reportId, 'pending', 'Report submitted by citizen');
-  
-  db.prepare('INSERT INTO activity_logs (user_id, action, details) VALUES (?, ?, ?)').run(req.user.id, 'report_created', `Report ID: ${reportId}`);
-  res.json({ id: reportId });
-});
-
-app.get('/api/activity', authenticate, (req: any, res) => {
-  const logs = db.prepare('SELECT * FROM activity_logs WHERE user_id = ? ORDER BY created_at DESC LIMIT 10').all(req.user.id);
-  res.json(logs);
-});
-
-// --- Admin Routes ---
-app.get('/api/admin/stats', authenticate, isAdmin, (req, res) => {
-  const totalUsers = db.prepare('SELECT COUNT(*) as count FROM users').get() as any;
-  const activeUsers = db.prepare("SELECT COUNT(*) as count FROM users WHERE status = 'active'").get() as any;
-  const totalReports = db.prepare('SELECT COUNT(*) as count FROM reports').get() as any;
-  const totalReviews = db.prepare('SELECT COUNT(*) as count FROM reviews').get() as any;
-  
-  // Simple growth mock data for charts
-  const growth = [
-    { name: 'Jan', users: 400, reports: 240 },
-    { name: 'Feb', users: 300, reports: 139 },
-    { name: 'Mar', users: 200, reports: 980 },
-    { name: 'Apr', users: 278, reports: 390 },
-    { name: 'May', users: 189, reports: 480 },
-    { name: 'Jun', users: 239, reports: 380 },
-  ];
-
-  res.json({
-    totalUsers: totalUsers.count,
-    activeUsers: activeUsers.count,
-    totalReports: totalReports.count,
-    totalReviews: totalReviews.count,
-    growth
-  });
-});
-
-app.get('/api/admin/users', authenticate, isAdmin, (req, res) => {
-  const users = db.prepare('SELECT id, name, email, role, status, join_date FROM users ORDER BY join_date DESC').all();
-  res.json(users);
-});
-
-app.put('/api/admin/users/:id', authenticate, isAdmin, (req: any, res) => {
-  const { role, status } = req.body;
-  db.prepare('UPDATE users SET role = ?, status = ? WHERE id = ?').run(role, status, req.params.id);
-  db.prepare('INSERT INTO activity_logs (user_id, action, details) VALUES (?, ?, ?)').run(req.user.id, 'user_updated', `Updated user ${req.params.id}`);
-  res.json({ success: true });
-});
-
-app.delete('/api/admin/users/:id', authenticate, isAdmin, (req: any, res) => {
-  db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
-  db.prepare('INSERT INTO activity_logs (user_id, action, details) VALUES (?, ?, ?)').run(req.user.id, 'user_deleted', `Deleted user ${req.params.id}`);
-  res.json({ success: true });
-});
-
-app.get('/api/admin/reports', authenticate, isAdmin, (req, res) => {
-  const reports = db.prepare('SELECT r.*, u.name as user_name FROM reports r JOIN users u ON r.user_id = u.id ORDER BY r.created_at DESC').all();
-  res.json(reports);
-});
-
-app.put('/api/admin/reports/:id', authenticate, isAdmin, async (req: any, res) => {
-  const { status, admin_notes } = req.body;
-  const { id } = req.params;
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
   
   try {
-    db.prepare('UPDATE reports SET status = ?, admin_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(status, admin_notes, id);
-    
-    // Add to status history
-    db.prepare('INSERT INTO report_status_history (report_id, status, notes) VALUES (?, ?, ?)').run(id, status, admin_notes);
-    
-    db.prepare('INSERT INTO activity_logs (user_id, action, details) VALUES (?, ?, ?)').run(req.user.id, 'report_updated', `Updated report ${id} to ${status}`);
-
-    // Sync to Firestore for Flutter app
-    if (db_firebase) {
-      const reportRef = db_firebase.collection('admin_reports').doc(id.toString());
-      await reportRef.set({
-        status,
-        admin_notes,
-        updated_at: admin.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
-    }
-
+    await db_firebase.collection('chat_history').add({
+      user_email: req.user.email,
+      role,
+      content,
+      file_url: file_url || null,
+      file_type: file_type || null,
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
     res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Failed to save message: ' + err.message });
   }
 });
 
-app.post('/api/admin/reports/:id/analyze', authenticate, isAdmin, (req: any, res) => {
-  const { analysis } = req.body;
-  db.prepare('UPDATE reports SET ai_analysis = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(analysis, req.params.id);
-  res.json({ success: true });
+app.delete('/api/chat/history', authenticate, async (req: any, res) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  try {
+    const snapshot = await db_firebase.collection('chat_history')
+      .where('user_email', '==', req.user.email)
+      .get();
+    const batch = db_firebase.batch();
+    snapshot.forEach(doc => batch.delete(doc.ref));
+    await batch.commit();
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to clear history: ' + err.message });
+  }
 });
 
-app.post('/api/admin/reports/:id/initiate', authenticate, isAdmin, async (req: any, res) => {
-  const { notes } = req.body;
-  const { id } = req.params;
-  const report = db.prepare('SELECT r.*, u.phone, u.name as user_name FROM reports r JOIN users u ON r.user_id = u.id WHERE r.id = ?').get(id) as any;
-  
-  if (!report) return res.status(404).json({ error: 'Report not found' });
+// --- User Reports ---
+app.post('/api/reports', authenticate, async (req: any, res) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  const { title, description, category, location, image_url, ai_analysis } = req.body;
+  const email = req.user.email;
 
   try {
-    db.prepare('UPDATE reports SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run('initiated', id);
-    db.prepare('INSERT INTO report_status_history (report_id, status, notes) VALUES (?, ?, ?)').run(id, 'initiated', notes || 'Report initiated for action');
-    
-    // Sync to Firestore
-    if (db_firebase) {
-      const reportRef = db_firebase.collection('admin_reports').doc(id.toString());
-      await reportRef.set({
-        status: 'initiated',
-        admin_notes: notes || 'Action initiated',
-        updated_at: admin.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
+    // Fetch user info for richer report data
+    const userDoc = await db_firebase.collection('users').doc(email).get();
+    const userData = userDoc.data() || {};
+
+    const reportId = `rep_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    // Upload image to storage if it's base64, otherwise store as-is
+    let finalImageUrl = image_url || null;
+    if (image_url && image_url.includes('base64,')) {
+      const uploaded = await uploadBase64ToStorage(image_url, `reports/${reportId}/image_${Date.now()}.jpg`);
+      finalImageUrl = uploaded || image_url.substring(0, 200000); // Keep base64 if storage fails
     }
 
-    // Simulate sending SMS
-    const target = report.category === 'Crime' ? 'Police' : report.category === 'Garbage' ? 'Sanitation' : 'Rescue Team';
-    console.log(`[SMS] To: ${target}, Message: New ${report.category} report at ${report.location}. Citizen: ${report.user_name}, Phone: ${report.phone}. Notes: ${notes}`);
-    
-    res.json({ success: true, message: `Report initiated. Notification sent to ${target}.` });
+    const newReport = {
+      reportId,
+      userId: email,
+      user_email: email,
+      user_name: userData.name || email,
+      title: title || category || 'Untitled Report',
+      description,
+      category: category || title || 'Other',
+      location: location || 'Unknown Location',
+      image_url: finalImageUrl,
+      status: 'pending',
+      ai_analysis: ai_analysis || null,
+      created_at: admin.firestore.FieldValue.serverTimestamp(),
+      updated_at: admin.firestore.FieldValue.serverTimestamp(),
+      // Legacy fields for compatibility
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    // 1. Save to main reports collection (user can see it in My Reports)
+    await db_firebase.collection('reports').doc(reportId).set(newReport);
+
+    // 2. CRITICAL: Also add to ai_analysis_queue so admin AI Analyzer sees it
+    await db_firebase.collection('ai_analysis_queue').doc(reportId).set(newReport);
+
+    // 3. Log the activity
+    await db_firebase.collection('activity_logs').add({
+      user_email: email,
+      user_name: userData.name || email,
+      action: 'report_submitted',
+      details: `Report submitted: "${title}" at ${location}`,
+      created_at: admin.firestore.FieldValue.serverTimestamp(),
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({ success: true, reportId });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[Reports] Failed to submit report:', err.message);
+    res.status(500).json({ error: 'Failed to submit report: ' + err.message });
   }
 });
 
-app.get('/api/admin/logs', authenticate, isAdmin, (req, res) => {
-  const logs = db.prepare('SELECT l.*, u.name as user_name FROM activity_logs l LEFT JOIN users u ON l.user_id = u.id ORDER BY l.created_at DESC LIMIT 100').all();
-  res.json(logs);
+app.get('/api/reports', authenticate, async (req: any, res) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  try {
+    const snapshot = await db_firebase.collection('reports')
+      .where('user_email', '==', req.user.email)
+      .orderBy('createdAt', 'desc')
+      .get();
+    const reports = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    res.json(reports);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to fetch reports: ' + err.message });
+  }
 });
 
-async function startServer() {
-  const PORT = 3000;
+// --- Extended Reports & Activity ---
+app.get('/api/reports/:id/history', authenticate, async (req: any, res) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  try {
+    // Check both legacy history and new activity logs for this report
+    const snapshot = await db_firebase.collection('activity_logs')
+      .where('details', '>=', `Report ID: ${req.params.id}`)
+      .where('details', '<=', `Report ID: ${req.params.id}\uf8ff`)
+      .get();
+    
+    // Also check report_status_history for backward compatibility
+    const legacySnapshot = await db_firebase.collection('report_status_history')
+      .where('report_id', '==', req.params.id)
+      .get();
+
+    const history = [
+      ...snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), status: doc.data().action })),
+      ...legacySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+    ].sort((a: any, b: any) => (a.timestamp?.toDate() || 0) - (b.timestamp?.toDate() || 0));
+
+    res.json(history);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to fetch history: ' + err.message });
+  }
+});
+
+app.get('/api/activity', authenticate, async (req: any, res) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  try {
+    const snapshot = await db_firebase.collection('activity_logs')
+      .where('user_email', '==', req.user.email)
+      .orderBy('timestamp', 'desc')
+      .limit(10)
+      .get();
+    const logs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    res.json(logs);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to fetch activity: ' + err.message });
+  }
+});
+
+// --- Admin Extended Routes ---
+app.get('/api/admin/stats', authenticate, isAdmin, async (req, res) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  try {
+    const usersSnap = await db_firebase.collection('users').get();
+    const activeUsersSnap = await db_firebase.collection('users').where('status', '==', 'active').get();
+    const reportsSnap = await db_firebase.collection('reports').get();
+    const reviewsSnap = await db_firebase.collection('reviews').get();
+    
+    // Mock growth data as before
+    const growth = [
+      { name: 'Jan', users: 400, reports: 240 },
+      { name: 'Feb', users: 300, reports: 139 },
+      { name: 'Mar', users: 200, reports: 980 },
+      { name: 'Apr', users: 278, reports: 390 },
+      { name: 'May', users: 189, reports: 480 },
+      { name: 'Jun', users: 239, reports: 380 },
+    ];
+
+    res.json({
+      totalUsers: usersSnap.size,
+      activeUsers: activeUsersSnap.size,
+      totalReports: reportsSnap.size,
+      totalReviews: reviewsSnap.size,
+      growth
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to fetch stats: ' + err.message });
+  }
+});
+
+app.get('/api/admin/logs', authenticate, isAdmin, async (req, res) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  try {
+    const snapshot = await db_firebase.collection('activity_logs')
+      .orderBy('timestamp', 'desc')
+      .limit(100)
+      .get();
+    const logs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    res.json(logs);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to fetch logs: ' + err.message });
+  }
+});
+
+// Note: /api/admin/users GET and PUT/DELETE are defined earlier in the file (near line 359)
+// The routes below handle extended admin user actions
+
+app.post('/api/admin/users/:id/suspend', authenticate, isAdmin, async (req, res) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  try {
+    const { id } = req.params;
+    const { status, duration } = req.body; // 'suspended' or 'active', duration: 7 or 30 days
+    
+    let updateData: any = { status };
+    if (status === 'suspended') {
+      const days = duration || 7;
+      const suspendedUntil = new Date();
+      suspendedUntil.setDate(suspendedUntil.getDate() + days);
+      updateData.suspended_until = admin.firestore.Timestamp.fromDate(suspendedUntil);
+      updateData.suspension_reason = req.body.reason || 'Multiple fault reports';
+    } else {
+      updateData.suspended_until = null;
+    }
+
+    await db_firebase.collection('users').doc(id).update(updateData);
+    
+    await db_firebase.collection('activity_logs').add({
+      user_email: id,
+      action: status === 'suspended' ? 'account_suspended' : 'account_activated',
+      details: status === 'suspended' ? `Suspended for ${duration || 7} days` : 'Account activated by admin',
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({ success: true, message: `User ${status === 'suspended' ? 'suspended' : 'activated'} successfully` });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to change user status: ' + err.message });
+  }
+});
+
+app.delete('/api/admin/users/:id', authenticate, isAdmin, async (req, res) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  try {
+    const { id } = req.params;
+    await db_firebase.collection('users').doc(id).delete();
+    // Also delete from Auth if needed, but for now we focus on Firestore
+    res.json({ success: true, message: 'User deleted successfully' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to delete user: ' + err.message });
+  }
+});
+
+
+// -----------------------------
+// ADVANCED SOS WITH TWILIO
+// -----------------------------
+app.post('/api/sos/trigger', authenticate, async (req: any, res: any) => {
+  const { userLocation, emergencyType, contactPhone, userName } = req.body;
+  if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN || !process.env.TWILIO_PHONE_NUMBER) {
+    console.error('Twilio env missing, falling back.');
+    return res.json({ success: false, error: 'Twilio configuration is missing from the environment.' });
+  }
+
+  try {
+    const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+    let navUrl = userLocation;
+    if (userLocation && userLocation.lat && userLocation.lng) {
+      navUrl = `https://www.google.com/maps?q=${userLocation.lat},${userLocation.lng}`;
+    }
+
+    const msg = `EMERGENCY ALERT from ${userName || 'CityConnect User'}. Reason: ${emergencyType}. Immediate assistance required. Live location: ${navUrl}`;
+    
+    // Send SMS
+    await client.messages.create({
+      body: msg,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      to: contactPhone
+    });
+    
+    // Optional: Make Call
+    await client.calls.create({
+      twiml: `<Response><Say>Emergency Alert! ${userName || 'A user'} needs immediate assistance for ${emergencyType}. Check your SMS for their live location.</Say></Response>`,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      to: contactPhone
+    });
+
+    res.json({ success: true, message: 'SOS Dispatched via Twilio!' });
+  } catch (err: any) {
+    console.error('Twilio Error:', err.message);
+    res.json({ success: false, error: err.message });
+  }
+});
+
+
+// Contact Storage Endpoint via Firebase
+app.post('/api/sos/contacts', authenticate, async (req: any, res: any) => {
+  const { parent_number, relative_number } = req.body;
   
-  // --- Cleanup Job ---
+  if (!db_firebase) {
+    return res.json({ success: false, error: 'Firebase is not initialized on the backend' });
+  }
+
+  try {
+     const userRef = db_firebase.collection('users').doc(req.user.id.toString());
+     const updateData: any = {};
+     if (parent_number !== undefined) updateData.parent_number = parent_number;
+     if (relative_number !== undefined) updateData.relative_number = relative_number;
+     
+     await userRef.set(updateData, { merge: true });
+     
+     // Note: local SQLite fallback (if SQLite returns) isn't patched here intentionally per pure Firebase requirement
+     res.json({ success: true, message: 'Contacts saved to Firebase' });
+  } catch (err: any) {
+     console.error('Firebase save error:', err.message);
+     res.json({ success: false, error: err.message });
+  }
+});
+
+
+async function startServer() {
+  const PORT = Number(process.env.PORT) || 3000;
+  
+  // --- Cleanup Job (Firestore Version) ---
   // Run every hour to permanently delete accounts scheduled for deletion more than 30 days ago
-  setInterval(() => {
+  setInterval(async () => {
+    if (!db_firebase) return;
     try {
-      const now = new Date().toISOString();
-      const accountsToDelete = db.prepare('SELECT id FROM users WHERE scheduled_deletion_at <= ?').all(now) as any[];
+      console.log('[Cleanup Job] Checking for expired accounts...');
+      const now = admin.firestore.Timestamp.now();
+      const snapshot = await db_firebase.collection('users')
+        .where('scheduled_deletion_at', '<=', now)
+        .get();
       
-      for (const account of accountsToDelete) {
-        // Delete all related data
-        db.prepare('DELETE FROM activity_logs WHERE user_id = ?').run(account.id);
-        db.prepare('DELETE FROM chat_history WHERE user_id = ?').run(account.id);
-        db.prepare('DELETE FROM reports WHERE user_id = ?').run(account.id);
-        db.prepare('DELETE FROM users WHERE id = ?').run(account.id);
-        console.log(`Permanently deleted account ID ${account.id}`);
+      if (snapshot.empty) {
+        console.log('[Cleanup Job] No accounts to delete.');
+        return;
       }
-    } catch (err) {
-      console.error('Cleanup job failed', err);
+
+      for (const doc of snapshot.docs) {
+        const email = doc.id;
+        console.log(`[Cleanup Job] Permanently deleting account: ${email}`);
+        
+        // In a real app, use a recursive delete or a Cloud Function.
+        // For this migration, we'll do manual cleanup of key collections.
+        
+        // 1. Delete reports
+        const reportsSnap = await db_firebase.collection('reports').where('user_email', '==', email).get();
+        const batch = db_firebase.batch();
+        reportsSnap.forEach(rDoc => batch.delete(rDoc.ref));
+        
+        // 2. Delete activity logs
+        const logsSnap = await db_firebase.collection('activity_logs').where('user_email', '==', email).get();
+        logsSnap.forEach(lDoc => batch.delete(lDoc.ref));
+        
+        // 3. Delete user doc
+        batch.delete(doc.ref);
+        
+        await batch.commit();
+        console.log(`[Cleanup Job] Successfully deleted all data for ${email}`);
+      }
+    } catch (err: any) {
+      console.error('[Cleanup Job Error]:', err.message);
     }
   }, 3600000); // 1 hour
 
-  // Start listening first to satisfy the platform's health check
-  app.listen(PORT, "0.0.0.0", () => {
+  // Init HTTP and Socket.io
+  const server = http.createServer(app);
+  const io = new SocketServer(server, {
+    cors: { origin: "*", methods: ["GET", "POST"] }
+  });
+  
+  // Set io mapping globally so disasterService can emit
+  const globalAny = global as any;
+  globalAny.io = io;
+  
+  io.on('connection', (socket) => {
+    console.log('🔗 Socket connected:', socket.id);
+  });
+
+  // Start listening
+  server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 

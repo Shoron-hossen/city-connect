@@ -1,13 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, Link, useLocation } from 'react-router-dom';
-import { Phone, Mail, MessageCircle, Github, MapPin, Trash2, Cctv, Zap, Lightbulb, Brain, Camera, CheckCircle, ChevronDown, Loader2, Cpu, MessageSquare, X, Send, Menu, LogOut, User as UserIcon, AlertCircle, AlertTriangle, ArrowLeft, Users, FileText, Activity, Settings, Search, Filter, Shield, ShieldAlert, ShieldCheck, BarChart3, TrendingUp, Calendar, RefreshCw, Fingerprint, Moon, Sun } from 'lucide-react';
+import { Phone, Mail, MessageCircle, Github, MapPin, Trash2, Cctv, Zap, Lightbulb, Brain, Camera, CheckCircle, ChevronDown, Loader2, Cpu, MessageSquare, X, Send, Menu, LogOut, User as UserIcon, AlertCircle, AlertTriangle, ArrowLeft, Users, FileText, Activity, Settings, Search, Filter, Shield, ShieldAlert, ShieldCheck, BarChart3, TrendingUp, Calendar, RefreshCw, Fingerprint, Moon, Sun, Car, BellRing } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import Webcam from 'react-webcam';
 import { motion } from 'framer-motion';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
+import RemarkableDatesWidget from './RemarkableDatesWidget';
+import TransportationPage from './TransportationPage';
+import EnvironmentPage from './EnvironmentPage';
+import DisasterAlertPage from './DisasterAlertPage';
 
 // --- Types ---
-interface User {
+export interface User {
   id: number;
   name: string;
   email: string;
@@ -98,7 +102,9 @@ export default function App() {
           <Route path="/my-reports" element={<ProtectedRoute user={user}><MyReports user={user!} setUser={setUser} /></ProtectedRoute>} />
           <Route path="/admin/*" element={<AdminRoute user={user}><AdminDashboard user={user!} setUser={setUser} /></AdminRoute>} />
           <Route path="/report" element={<ProtectedRoute user={user}><ReportIssue user={user!} setUser={setUser} /></ProtectedRoute>} />
-            <Route path="/success" element={<ProtectedRoute user={user}><Success /></ProtectedRoute>} />
+          <Route path="/transportation" element={<ProtectedRoute user={user}><TransportationPage user={user!} setUser={setUser} /></ProtectedRoute>} />
+          <Route path="/disaster-alert" element={<ProtectedRoute user={user}><DisasterAlertPage user={user!} setUser={setUser} /></ProtectedRoute>} />
+          <Route path="/success" element={<ProtectedRoute user={user}><Success /></ProtectedRoute>} />
           </Routes>
           <FloatingAIAssistant />
           <GlobalFooter />
@@ -138,10 +144,10 @@ function AdminRoute({ user, children }: { user: User | null, children: React.Rea
 }
 
 // --- Layout Components ---
-function Navbar({ user, setUser }: { user: User | null, setUser: (user: User | null) => void }) {
+export function Navbar({ user, setUser }: { user: User | null, setUser: (user: User | null) => void }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const isDashboard = location.pathname.startsWith('/dashboard') || location.pathname.startsWith('/profile') || location.pathname.startsWith('/ai-chat') || location.pathname.startsWith('/sos') || location.pathname.startsWith('/my-reports');
+  const isDashboard = location.pathname.startsWith('/dashboard') || location.pathname.startsWith('/profile') || location.pathname.startsWith('/ai-chat') || location.pathname.startsWith('/sos') || location.pathname.startsWith('/my-reports') || location.pathname.startsWith('/transportation') || location.pathname.startsWith('/disaster-alert');
 
   const handleLogout = () => {
     localStorage.removeItem('token');
@@ -160,10 +166,16 @@ function Navbar({ user, setUser }: { user: User | null, setUser: (user: User | n
         
         {user && isDashboard && (user.role !== 'Super Admin') && (
           <>
-            <Link to="/ai-chat" className="flex items-center gap-2 hover:text-blue-300 transition-colors font-medium">
+            <Link to="/transportation" className={`flex items-center gap-2 transition-colors font-medium ${location.pathname === '/transportation' ? 'text-indigo-400 border-b-2 border-indigo-400 pb-1' : 'text-gray-300 hover:text-indigo-400'}`}>
+              <Car size={18} className={location.pathname === '/transportation' ? 'text-indigo-300' : 'text-indigo-400'} /> Transport
+            </Link>
+            <Link to="/disaster-alert" className={`flex items-center gap-2 transition-colors font-medium ${location.pathname === '/disaster-alert' ? 'text-orange-400 border-b-2 border-orange-400 pb-1' : 'text-gray-300 hover:text-orange-400'}`}>
+              <BellRing size={18} className={location.pathname === '/disaster-alert' ? 'text-orange-300' : 'text-orange-400'} /> Disaster Alert
+            </Link>
+            <Link to="/ai-chat" className={`flex items-center gap-2 transition-colors font-medium ${location.pathname === '/ai-chat' ? 'text-purple-400 border-b-2 border-purple-400 pb-1' : 'text-gray-300 hover:text-purple-400'}`}>
               <Brain size={18} className="text-purple-400" /> AI Chat
             </Link>
-            <Link to="/my-reports" className="flex items-center gap-2 hover:text-blue-300 transition-colors font-medium">
+            <Link to="/my-reports" className={`flex items-center gap-2 transition-colors font-medium ${location.pathname === '/my-reports' ? 'text-blue-400 border-b-2 border-blue-400 pb-1' : 'text-gray-300 hover:text-blue-400'}`}>
               <FileText size={18} className="text-blue-400" /> My Reports
             </Link>
             <Link to="/sos" className="flex items-center gap-2 bg-red-600 hover:bg-red-500 px-4 py-1.5 rounded-full font-bold transition-all animate-pulse shadow-lg shadow-red-500/20">
@@ -434,7 +446,7 @@ function SignUp({ setUser }: { setUser: (user: User) => void }) {
       
       const result = JSON.parse(response.response || '{}');
       
-      if (result.match && result.confidence > 0.7) {
+      if (result.match && result.confidence > 0.75) {
         setIsFaceVerified(true);
         setFaceConfidence(result.confidence);
         setMessage(`Face matched successfully! Confidence: ${(result.confidence * 100).toFixed(1)}%`);
@@ -1205,10 +1217,11 @@ function Dashboard({ user, setUser }: { user: User, setUser: (user: User | null)
             </div>
           </div>
           
-          <HomepageChatBox />
+
         </div>
 
         <div className="hidden md:flex w-full md:w-1/2 flex-col">
+          <RemarkableDatesWidget />
           <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-8 h-full overflow-y-auto max-h-[600px]">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-bold">Recent Activity</h2>
@@ -1342,18 +1355,30 @@ function MyReports({ user, setUser }: { user: User, setUser: (user: User | null)
 
   const handleReportClick = (report: any) => {
     setSelectedReport(report);
-    fetchHistory(report.id);
+    fetchHistory(report.id || report.reportId);
   };
 
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'pending': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
+      case 'pending_ai': return 'bg-orange-500/20 text-orange-400 border-orange-500/30';
       case 'approved': return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
       case 'initiated': return 'bg-purple-500/20 text-purple-400 border-purple-500/30';
       case 'completed': return 'bg-green-500/20 text-green-400 border-green-500/30';
       case 'rejected': return 'bg-red-500/20 text-red-400 border-red-500/30';
       default: return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
     }
+  };
+
+  // Helper to safely convert Firestore timestamp or ISO string to Date
+  const toDate = (val: any): Date | null => {
+    if (!val) return null;
+    if (val instanceof Date) return val;
+    if (typeof val === 'string') return new Date(val);
+    if (val._seconds) return new Date(val._seconds * 1000);
+    if (val.seconds) return new Date(val.seconds * 1000);
+    if (typeof val.toDate === 'function') return val.toDate();
+    return null;
   };
 
   return (
@@ -1375,24 +1400,27 @@ function MyReports({ user, setUser }: { user: User, setUser: (user: User | null)
                 <Loader2 className="animate-spin text-blue-400" size={40} />
               </div>
             ) : reports.length > 0 ? (
-              reports.map((report) => (
-                <div 
-                  key={report.id} 
-                  onClick={() => handleReportClick(report)}
-                  className={`p-5 rounded-3xl border transition-all cursor-pointer ${selectedReport?.id === report.id ? 'bg-white/15 border-blue-500/50 shadow-lg shadow-blue-500/10' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}
-                >
-                  <div className="flex justify-between items-start mb-3">
-                    <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border ${getStatusColor(report.status)}`}>
-                      {report.status}
-                    </span>
-                    <span className="text-[10px] text-gray-400">{new Date(report.created_at).toLocaleDateString()}</span>
+              reports.map((report) => {
+                const reportDate = toDate(report.created_at || report.createdAt);
+                return (
+                  <div
+                    key={report.id}
+                    onClick={() => handleReportClick(report)}
+                    className={`p-5 rounded-3xl border transition-all cursor-pointer ${selectedReport?.id === report.id ? 'bg-white/15 border-blue-500/50 shadow-lg shadow-blue-500/10' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}
+                  >
+                    <div className="flex justify-between items-start mb-3">
+                      <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border ${getStatusColor(report.status)}`}>
+                        {report.status || 'pending'}
+                      </span>
+                      <span className="text-[10px] text-gray-400">{reportDate ? reportDate.toLocaleDateString() : '-'}</span>
+                    </div>
+                    <h3 className="font-bold text-lg mb-1 truncate">{report.title}</h3>
+                    <p className="text-gray-400 text-sm flex items-center gap-1 truncate">
+                      <MapPin size={14} /> {(report.location || '').split(',')[0]}
+                    </p>
                   </div>
-                  <h3 className="font-bold text-lg mb-1 truncate">{report.title}</h3>
-                  <p className="text-gray-400 text-sm flex items-center gap-1 truncate">
-                    <MapPin size={14} /> {report.location.split(',')[0]}
-                  </p>
-                </div>
-              ))
+                );
+              })
             ) : (
               <div className="text-center py-20 bg-white/5 rounded-3xl border border-white/10">
                 <FileText size={48} className="mx-auto mb-4 opacity-20" />
@@ -1535,15 +1563,15 @@ function ReportIssue({ user, setUser }: { user: User, setUser: (user: User | nul
         aiResult = { category: issueType, confidence: 0.8, description: "AI analysis failed, using user input." };
       }
 
-      // 2. Save to Backend
-      request('/api/reports', {
+      // 2. Save to Backend — MUST await so report is saved before navigating
+      await request('/api/reports', {
         method: 'POST',
         body: JSON.stringify({
           title: issueType,
           description: description,
           category: aiResult.category || issueType,
           location: location,
-          image_url: image.substring(0, 1000), // Truncated for demo
+          image_url: image, // Send full base64 image — server handles storage upload
           ai_analysis: JSON.stringify(aiResult)
         })
       });
@@ -1872,18 +1900,22 @@ function AdminUsers() {
     fetchUsers();
   }, []);
 
-  const handleUpdateRole = async (id: number, role: string, status: string) => {
-    await request(`/api/admin/users/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify({ role, status })
-    });
-    fetchUsers();
+  const handleUpdateRole = async (userId: string, role: string, status: string) => {
+    try {
+      await request(`/api/admin/users/${userId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ role, status })
+      });
+      fetchUsers();
+    } catch (err: any) {
+      alert('Failed to update user: ' + err.message);
+    }
   };
 
-  const handleDeleteUser = async (id: number) => {
-    if (confirm('Are you sure you want to delete this user? This will also remove them from Firebase Auth and Firestore.')) {
+  const handleDeleteUser = async (userId: string) => {
+    if (confirm(`Are you sure you want to delete ${userId}? This action is permanent.`)) {
       try {
-        await request(`/api/admin/users/${id}`, { method: 'DELETE' });
+        await request(`/api/admin/users/${userId}`, { method: 'DELETE' });
         fetchUsers();
       } catch (err: any) {
         alert('Failed to delete user: ' + err.message);
@@ -1909,8 +1941,8 @@ function AdminUsers() {
         <table className="w-full text-left border-collapse">
           <thead>
             <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider border-b border-gray-200">
-              <th className="px-6 py-4 font-semibold">Name</th>
-              <th className="px-6 py-4 font-semibold">Email</th>
+              <th className="px-6 py-4 font-semibold">User</th>
+              <th className="px-6 py-4 font-semibold">Email / Phone</th>
               <th className="px-6 py-4 font-semibold">Face Match</th>
               <th className="px-6 py-4 font-semibold">Role</th>
               <th className="px-6 py-4 font-semibold">Status</th>
@@ -1922,20 +1954,32 @@ function AdminUsers() {
               <tr key={u.id} className="hover:bg-gray-50/50 transition-colors">
                 <td className="px-6 py-4 font-medium text-gray-900">
                   <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-xs">
-                      {u.name.charAt(0)}
+                    {(u.photo_url || u.profile_photo_url) ? (
+                      <img src={u.photo_url || u.profile_photo_url} alt={u.name} className="w-8 h-8 rounded-full object-cover border border-gray-200" referrerPolicy="no-referrer" />
+                    ) : (
+                      <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-xs">
+                        {u.name?.charAt(0) || '?'}
+                      </div>
+                    )}
+                    <div>
+                      <p className="font-semibold">{u.name}</p>
+                      <p className="text-xs text-gray-400">{new Date(u.join_date).toLocaleDateString()}</p>
                     </div>
-                    {u.name}
                     {u.fraud_alert === 1 && (
                       <AlertTriangle size={16} className="text-red-500 animate-pulse" />
                     )}
                   </div>
                 </td>
-                <td className="px-6 py-4 text-gray-500">{u.email}</td>
+                <td className="px-6 py-4 text-gray-500">
+                  <div>
+                    <p>{u.email}</p>
+                    {u.phone && <p className="text-xs text-gray-400">{u.phone}</p>}
+                  </div>
+                </td>
                 <td className="px-6 py-4">
                   <div className="flex items-center gap-2">
                     <div className={`w-2 h-2 rounded-full ${u.face_confidence > 0.8 ? 'bg-green-500' : u.face_confidence > 0.6 ? 'bg-yellow-500' : 'bg-red-500'}`}></div>
-                    <span className="text-sm font-medium">{(u.face_confidence * 100).toFixed(1)}%</span>
+                    <span className="text-sm font-medium">{((u.face_confidence || 0) * 100).toFixed(1)}%</span>
                   </div>
                 </td>
                 <td className="px-6 py-4">
@@ -1955,7 +1999,7 @@ function AdminUsers() {
                 </td>
                 <td className="px-6 py-4">
                   <select 
-                    value={u.status} 
+                    value={u.status || 'active'} 
                     onChange={(e) => handleUpdateRole(u.id, u.role, e.target.value)}
                     className={`text-sm rounded-full px-3 py-1 font-medium border-none focus:ring-2 focus:ring-blue-500 cursor-pointer ${
                       u.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
@@ -1966,7 +2010,6 @@ function AdminUsers() {
                     <option value="blocked">Blocked</option>
                   </select>
                 </td>
-                <td className="px-6 py-4 text-gray-500 text-sm">{new Date(u.join_date).toLocaleDateString()}</td>
                 <td className="px-6 py-4 text-right">
                   <button onClick={() => handleDeleteUser(u.id)} className="text-red-600 hover:text-red-800 text-sm font-medium" disabled={u.role === 'Super Admin'}>Delete</button>
                 </td>
@@ -2209,18 +2252,24 @@ function AdminAIAnalyzer() {
           <div className="flex justify-center py-20"><Loader2 className="animate-spin text-blue-600" size={40} /></div>
         ) : activeSubTab === 'queue' ? (
           reportQueue.length > 0 ? (
-            reportQueue.map((report) => (
+            reportQueue.map((report) => {
+              const qDate = (() => { const v = report.created_at || report.createdAt; if (!v) return null; if (typeof v === 'string') return new Date(v); if (v._seconds) return new Date(v._seconds * 1000); if (v.seconds) return new Date(v.seconds * 1000); return null; })();
+              return (
               <div key={report.id} className="bg-white rounded-3xl shadow-sm border border-gray-100 p-6 flex flex-col md:flex-row gap-6 hover:shadow-md transition-shadow">
                 <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-3">
-                    <span className="bg-blue-100 text-blue-600 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider">Queue</span>
-                    <span className="text-gray-400 text-xs">{new Date(report.created_at).toLocaleString()}</span>
+                  <div className="flex items-center gap-3 mb-3 flex-wrap">
+                    <span className="bg-blue-100 text-blue-600 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider">AI Queue</span>
+                    {report.user_name && <span className="text-gray-500 text-xs font-medium">by {report.user_name}</span>}
+                    <span className="text-gray-400 text-xs">{qDate ? qDate.toLocaleString() : '—'}</span>
                   </div>
                   <h3 className="text-xl font-bold mb-2">{report.title}</h3>
                   <p className="text-gray-600 mb-4">{report.description}</p>
                   <div className="flex items-center gap-2 text-gray-400 text-sm">
                     <MapPin size={16} /> {report.location}
                   </div>
+                  {report.image_url && (report.image_url.startsWith('http') || report.image_url.startsWith('data:')) && (
+                    <img src={report.image_url} alt="Report" className="mt-3 w-full max-h-48 object-cover rounded-2xl border border-gray-100" referrerPolicy="no-referrer" />
+                  )}
                 </div>
                 <div className="w-full md:w-80 flex flex-col gap-4 border-l border-gray-100 pl-0 md:pl-6">
                   {!results[report.id] ? (
@@ -2251,7 +2300,8 @@ function AdminAIAnalyzer() {
                   )}
                 </div>
               </div>
-            ))
+              );
+            })
           ) : (
             <div className="text-center py-20 bg-white rounded-3xl border border-dashed border-gray-200">
               <CheckCircle size={48} className="mx-auto mb-4 text-green-400 opacity-50" />
@@ -2433,6 +2483,17 @@ function AdminReports() {
   const [loading, setLoading] = useState(true);
   const [selectedReport, setSelectedReport] = useState<any>(null);
 
+  // Helper to safely convert Firestore timestamp or date string
+  const toDate = (val: any): Date | null => {
+    if (!val) return null;
+    if (val instanceof Date) return val;
+    if (typeof val === 'string') return new Date(val);
+    if (val._seconds) return new Date(val._seconds * 1000);
+    if (val.seconds) return new Date(val.seconds * 1000);
+    if (typeof val.toDate === 'function') return val.toDate();
+    return null;
+  };
+
   const fetchReports = () => {
     request('/api/admin/reports')
     .then(data => setReports(data))
@@ -2482,7 +2543,7 @@ function AdminReports() {
             {reports.map(r => (
               <tr key={r.id} className="hover:bg-gray-50/50 transition-colors">
                 <td className="px-6 py-4 font-mono text-sm text-gray-500">#{r.id}</td>
-                <td className="px-6 py-4 font-medium text-gray-900">{r.user_name}</td>
+                <td className="px-6 py-4 font-medium text-gray-900">{r.user_name || r.user_email || r.userId || '—'}</td>
                 <td className="px-6 py-4">
                   <span className="bg-gray-100 text-gray-700 px-3 py-1 rounded-full text-xs font-medium">{r.category}</span>
                 </td>
@@ -2505,7 +2566,7 @@ function AdminReports() {
                     <option value="rejected">Rejected</option>
                   </select>
                 </td>
-                <td className="px-6 py-4 text-gray-500 text-sm">{new Date(r.created_at).toLocaleDateString()}</td>
+                <td className="px-6 py-4 text-gray-500 text-sm">{(() => { const d = toDate(r.created_at || r.createdAt); return d ? d.toLocaleDateString() : '—'; })()}</td>
                 <td className="px-6 py-4 text-right">
                   <button onClick={() => setSelectedReport(r)} className="text-blue-600 hover:text-blue-800 text-sm font-medium">View Details</button>
                 </td>
@@ -2529,7 +2590,7 @@ function AdminReports() {
               <div className="grid grid-cols-2 gap-6">
                 <div>
                   <label className="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">User</label>
-                  <p className="text-gray-900 font-medium">{selectedReport.user_name}</p>
+                  <p className="text-gray-900 font-medium">{selectedReport.user_name || selectedReport.user_email || selectedReport.userId || '—'}</p>
                 </div>
                 <div>
                   <label className="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Category</label>
@@ -2541,7 +2602,7 @@ function AdminReports() {
                 </div>
                 <div>
                   <label className="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Date</label>
-                  <p className="text-gray-900 font-medium">{new Date(selectedReport.created_at).toLocaleString()}</p>
+                  <p className="text-gray-900 font-medium">{(() => { const d = toDate(selectedReport.created_at || selectedReport.createdAt); return d ? d.toLocaleString() : '—'; })()}</p>
                 </div>
               </div>
 
@@ -2736,7 +2797,7 @@ function Profile({ user, setUser }: { user: User, setUser: (user: User | null) =
     setMessage('');
     setError('');
     try {
-      await request('/api/auth/profile', {
+      const data = await request('/api/auth/profile', {
         method: 'PUT',
         body: JSON.stringify({ 
           name, 
@@ -2750,11 +2811,23 @@ function Profile({ user, setUser }: { user: User, setUser: (user: User | null) =
           relative_email: relativeEmail 
         }),
       });
-      const data = await request('/api/auth/me');
-      if (data.user) setUser(data.user);
+      if (data.user) {
+        // Update the global user state with fresh data from server
+        setUser(data.user);
+        // Sync local state fields to avoid stale UI
+        setName(data.user.name || name);
+        setPhone(data.user.phone || phone);
+        setLocation(data.user.location || location);
+        setPhotoUrl(data.user.photo_url || data.user.profile_photo_url || photoUrl);
+        setProfilePhotoUrl(data.user.profile_photo_url || data.user.photo_url || profilePhotoUrl);
+        setParentNumber(data.user.parent_number || parentNumber);
+        setParentEmail(data.user.parent_email || parentEmail);
+        setRelativeNumber(data.user.relative_number || relativeNumber);
+        setRelativeEmail(data.user.relative_email || relativeEmail);
+      }
       setMessage('Profile updated successfully!');
     } catch (err: any) {
-      setError(err.message);
+      setError(err.message || 'Failed to update profile. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -3164,48 +3237,50 @@ function SOSPage({ user, setUser }: { user: User, setUser: (user: User | null) =
 
   const triggerSOS = async () => {
     setCountdown(null);
-    setStatus('FETCHING LOCATION & SENDING ALERTS...');
+    setStatus('ESTABLISHING LIVE TRACKING & SENDING ALERTS...');
     
-    let locationStr = 'Unknown Location';
+    let dynamicLink = 'Unknown Location';
     
     if (navigator.geolocation) {
-      try {
-        const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(resolve, reject, { 
-            timeout: 15000, 
-            enableHighAccuracy: true,
-            maximumAge: 0
-          });
-        });
-        locationStr = `${position.coords.latitude},${position.coords.longitude}`;
-      } catch (e) {
-        console.warn('Could not get location:', e);
-        // Fallback to user's stored location if available
-        if (user.location) {
-          locationStr = user.location + ' (Stored Location)';
-        }
-      }
+       // Start tracking position continuously
+       navigator.geolocation.watchPosition(
+          (pos) => {
+            console.log('Location Ping updated: ', pos.coords.latitude, pos.coords.longitude);
+            // Example of dynamic tracking URL schema sent to contacts
+            dynamicLink = `https://cityconnect.live/track?uuid=${user.id}&lat=${pos.coords.latitude}&lng=${pos.coords.longitude}`;
+          },
+          (err) => console.warn(err),
+          { enableHighAccuracy: true, timeout: 30000, maximumAge: 5000 }
+       );
+
+       // Initial grab to ensure the first ping is sent out immediately via Twilio
+       try {
+         const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+             navigator.geolocation.getCurrentPosition(resolve, reject);
+         });
+         dynamicLink = `https://cityconnect.live/track?uuid=${user.id}&lat=${pos.coords.latitude}&lng=${pos.coords.longitude}`;
+       } catch(e) {}
     }
 
     try {
-      await request('/api/sos/alert', {
+      await request('/api/sos/trigger', {
         method: 'POST',
         body: JSON.stringify({ 
-          message: 'I am in an emergency! Please help me.',
-          location: locationStr
+          emergencyType: 'General Emergency',
+          userLocation: dynamicLink,
+          contactPhone: user.parent_number || user.relative_number,
+          userName: user.name
         })
       });
-      setStatus('ALERTS SENT SUCCESSFULLY!');
+      setStatus('TWILIO ALERTS SENT SUCCESSFULLY!');
     } catch (err: any) {
-      setStatus('ERROR SENDING ALERTS: ' + err.message);
+      setStatus('TWILIO DISPATCH FAILED: ' + err.message);
     }
     
     // Simulate finding nearby police stations
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(async (pos) => {
-        const { latitude, longitude } = pos.coords;
         try {
-          // Mocking nearby stations for demo
           setNearbyStations([
             { name: 'Central Police Station', distance: '0.8 km', phone: '911' },
             { name: 'District 4 Precinct', distance: '1.5 km', phone: '911' },
@@ -3213,10 +3288,6 @@ function SOSPage({ user, setUser }: { user: User, setUser: (user: User | null) =
         } catch (e) {}
       });
     }
-
-    // Simulate SMS/Call alerts
-    console.log(`SOS ALERT: Sending SMS to Parent (${user.parent_number}) and Relative (${user.relative_number})`);
-    console.log(`SOS ALERT: Calling Emergency Services...`);
   };
 
   return (
@@ -3295,11 +3366,29 @@ function SOSPage({ user, setUser }: { user: User, setUser: (user: User | null) =
         <div className="mt-12 grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-2xl">
           <div className="bg-white/5 p-6 rounded-2xl border border-white/10 text-left">
             <p className="text-gray-400 text-sm mb-1 uppercase font-bold tracking-widest">Parent Contact</p>
-            <p className="text-xl font-mono">{user.parent_number || 'Not Set'}</p>
+            <input 
+               type="text" 
+               defaultValue={user.parent_number} 
+               placeholder="Not Set (Tap to Edit)"
+               onBlur={(e) => {
+                  request('/api/sos/contacts', { method: 'POST', body: JSON.stringify({ parent_number: e.target.value }) }).then(() => setUser({...user, parent_number: e.target.value})).catch(e => console.error(e));
+               }}
+               className="w-full bg-transparent text-xl font-mono text-white outline-none focus:border-blue-500 border-b border-transparent transition-colors"
+            />
+            <p className="text-[10px] text-blue-400 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">Auto-saves to Firebase when you click away</p>
           </div>
           <div className="bg-white/5 p-6 rounded-2xl border border-white/10 text-left">
             <p className="text-gray-400 text-sm mb-1 uppercase font-bold tracking-widest">Relative Contact</p>
-            <p className="text-xl font-mono">{user.relative_number || 'Not Set'}</p>
+            <input 
+               type="text" 
+               defaultValue={user.relative_number} 
+               placeholder="Not Set (Tap to Edit)"
+               onBlur={(e) => {
+                  request('/api/sos/contacts', { method: 'POST', body: JSON.stringify({ relative_number: e.target.value }) }).then(() => setUser({...user, relative_number: e.target.value})).catch(e => console.error(e));
+               }}
+               className="w-full bg-transparent text-xl font-mono text-white outline-none focus:border-blue-500 border-b border-transparent transition-colors"
+            />
+            <p className="text-[10px] text-blue-400 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">Auto-saves to Firebase when you click away</p>
           </div>
         </div>
       </main>
