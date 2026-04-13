@@ -342,13 +342,20 @@ const uploadBase64ToStorage = async (base64Data: string, path: string): Promise<
     const file = bucket.file(path);
 
     await file.save(buffer, {
-      metadata: { contentType },
-      public: true
+      metadata: { contentType }
     });
 
-    // Make the file public and get URL
-    await file.makePublic();
-    return `https://storage.googleapis.com/${bucket.name}/${path}`;
+    try {
+      await file.makePublic();
+      return `https://storage.googleapis.com/${bucket.name}/${path}`;
+    } catch (e: any) {
+      // Fallback: if bucket blocks public access, generate a long-lived signed URL
+      const [url] = await file.getSignedUrl({
+        action: 'read',
+        expires: '01-01-2100' // Practically permanent
+      });
+      return url;
+    }
   } catch (err: any) {
     console.error('❌ Storage Upload Error:', err.message);
     return null;
@@ -415,7 +422,9 @@ app.put('/api/admin/users/:id', authenticate, async (req: any, res: any) => {
   }
 })// Delete User (Firestore Primary)
 app.delete('/api/admin/users/:id', authenticate, async (req: any, res: any) => {
-  if (req.user.role !== 'Super Admin') return res.status(403).json({ error: 'Only Super Admins can delete users' });
+  if (req.user.role !== 'Super Admin' && req.user.role !== 'admin' && req.user.email !== 'meshoron53@gmail.com') {
+    return res.status(403).json({ error: 'Not authorized to delete users' });
+  }
   const { id } = req.params; // Using email or unique ID
 
   if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
@@ -548,18 +557,42 @@ app.get('/api/admin/reports', authenticate, isAdmin, async (req: any, res: any) 
   }
 });
 
-// Update Report Status (used by mobile admin panel)
-app.put('/api/admin/reports/:id', authenticate, isAdmin, async (req: any, res: any) => {
+// Update Report Status (Admin) — handles status, admin_notes, ai_analysis
+app.put('/api/admin/reports/:id', authenticate, async (req: any, res: any) => {
+  if (req.user.role !== 'admin' && req.user.role !== 'Super Admin') return res.status(403).json({ error: 'Access denied' });
   if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
   const { id } = req.params;
-  const { status, admin_notes } = req.body;
+  const { status, admin_notes, ai_analysis } = req.body;
+
   try {
-    const updateData: any = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
-    if (status) updateData.status = status;
-    if (admin_notes) updateData.admin_notes = admin_notes;
-    await db_firebase.collection('reports').doc(id).update(updateData);
+    const updateData: any = {
+      updated_at: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    };
+    if (status !== undefined) updateData.status = status;
+    if (admin_notes !== undefined) updateData.admin_notes = admin_notes;
+    if (ai_analysis !== undefined) updateData.ai_analysis = ai_analysis;
+
+    // Use set with merge so it works whether or not the doc exists in admin_reports
+    await db_firebase.collection('admin_reports').doc(id).set(updateData, { merge: true });
+
+    // Always sync to the main user-visible reports collection
+    await db_firebase.collection('reports').doc(id).set(updateData, { merge: true });
+
+    // Add timeline entry when sending to manual review
+    if (status === 'pending_manual') {
+      await db_firebase.collection('report_status_history').add({
+        report_id: id,
+        status: 'pending_manual',
+        notes: 'Report analyzed by AI and sent to manual admin review.',
+        created_at: admin.firestore.FieldValue.serverTimestamp(),
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+      });
+    }
+
     res.json({ success: true, message: 'Report updated successfully' });
   } catch (err: any) {
+    console.error('[PUT /api/admin/reports/:id] Error:', err.message);
     res.status(500).json({ error: 'Failed to update report: ' + err.message });
   }
 });
@@ -649,31 +682,84 @@ app.post('/api/admin/reports/:id/manual-approve', authenticate, isAdmin, async (
   }
 });
 
-// Update Report Status (Admin)
-app.put('/api/admin/reports/:id', authenticate, async (req: any, res: any) => {
-  if (req.user.role !== 'admin' && req.user.role !== 'Super Admin') return res.status(403).json({ error: 'Access denied' });
-  const { id } = req.params;
-  const { status, admin_notes } = req.body;
+// --- Manual Review Reports (Admin reviews after AI) ---
+app.get('/api/admin/manual-reports', authenticate, isAdmin, async (req: any, res: any) => {
   if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
-
   try {
-    const updateData: any = { 
-      status, 
-      updated_at: admin.firestore.FieldValue.serverTimestamp() 
-    };
-    if (admin_notes) updateData.admin_notes = admin_notes;
-
-    // Update in admin_reports
-    await db_firebase.collection('admin_reports').doc(id).update(updateData);
-    
-    // Sync to user reports collection
-    await db_firebase.collection('reports').doc(id).update(updateData);
-
-    res.json({ success: true });
+    const snapshot = await db_firebase.collection('reports')
+      .where('status', 'in', ['pending', 'pending_manual'])
+      .get();
+    const reports = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return { id: doc.id, ...data };
+    });
+    // Sort by created_at descending
+    reports.sort((a: any, b: any) => {
+      const aTime = a.created_at?._seconds || a.createdAt?._seconds || 0;
+      const bTime = b.created_at?._seconds || b.createdAt?._seconds || 0;
+      return bTime - aTime;
+    });
+    res.json(reports);
   } catch (err: any) {
-    res.status(500).json({ error: 'Failed to update report: ' + err.message });
+    res.status(500).json({ error: 'Failed to fetch manual reports: ' + err.message });
   }
 });
+
+// Approve a report from manual review
+app.post('/api/admin/manual-reports/:id/approve', authenticate, isAdmin, async (req: any, res: any) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  const { id } = req.params;
+  const { admin_notes } = req.body;
+  try {
+    const updateData: any = {
+      status: 'approved',
+      admin_notes: admin_notes || 'Approved by administrator',
+      approved_at: admin.firestore.FieldValue.serverTimestamp(),
+      updated_at: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    };
+    await db_firebase.collection('reports').doc(id).update(updateData);
+    // Also add to status history for user tracking
+    await db_firebase.collection('report_status_history').add({
+      report_id: id,
+      status: 'approved',
+      notes: admin_notes || 'Report approved by administrator after manual review.',
+      created_at: admin.firestore.FieldValue.serverTimestamp(),
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+    res.json({ success: true, message: 'Report approved successfully' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to approve report: ' + err.message });
+  }
+});
+
+// Reject a report from manual review
+app.post('/api/admin/manual-reports/:id/reject', authenticate, isAdmin, async (req: any, res: any) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  const { id } = req.params;
+  const { admin_notes } = req.body;
+  try {
+    const updateData: any = {
+      status: 'rejected',
+      admin_notes: admin_notes || 'Rejected by administrator',
+      rejected_at: admin.firestore.FieldValue.serverTimestamp(),
+      updated_at: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    };
+    await db_firebase.collection('reports').doc(id).update(updateData);
+    await db_firebase.collection('report_status_history').add({
+      report_id: id,
+      status: 'rejected',
+      notes: admin_notes || 'Report rejected by administrator after manual review.',
+      created_at: admin.firestore.FieldValue.serverTimestamp(),
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+    res.json({ success: true, message: 'Report rejected successfully' });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to reject report: ' + err.message });
+  }
+});
+
 
 // Save AI Analysis to Report
 app.post('/api/admin/reports/:id/analyze', authenticate, async (req: any, res: any) => {
@@ -683,12 +769,19 @@ app.post('/api/admin/reports/:id/analyze', authenticate, async (req: any, res: a
   if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
 
   try {
-    await db_firebase.collection('admin_reports').doc(id).update({
+    const analysisData = {
       ai_analysis: analysis,
-      analyzed_at: admin.firestore.FieldValue.serverTimestamp()
-    });
+      analyzed_at: admin.firestore.FieldValue.serverTimestamp(),
+      updated_at: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    // Save to both admin_reports (create if missing) and main reports collection
+    await db_firebase.collection('admin_reports').doc(id).set(analysisData, { merge: true });
+    await db_firebase.collection('reports').doc(id).set(analysisData, { merge: true });
+
     res.json({ success: true });
   } catch (err: any) {
+    console.error('[Analyze] Error saving analysis:', err.message);
     res.status(500).json({ error: 'Failed to save analysis: ' + err.message });
   }
 });
@@ -904,6 +997,14 @@ app.post('/api/auth/signup', async (req, res) => {
       location, phone, nid_photo, selfie_photo, live_photo_url 
     } = req.body;
 
+    // 3.5 Strictly check NID uniqueness
+    if (nid_number) {
+       const nidCheck = await db_firebase.collection('users').where('nid_number', '==', nid_number).get();
+       if (!nidCheck.empty) {
+         return res.status(400).json({ error: 'This NID number is already registered to another account. The exact profile must be deleted from the system first to reuse this NID.' });
+       }
+    }
+
     // Standardize photo fields across Web/Mobile
     const finalNidPhoto = nid_photo || photo_url;
     const finalSelfiePhoto = selfie_photo || live_photo_url;
@@ -1065,27 +1166,31 @@ app.post('/api/auth/login', async (req, res) => {
     let userDoc = await userRef.get();
     let user = userDoc.data() as any;
 
-    // 1. Bootstrap admin if it's the first time and credentials match
-    if (!userDoc.exists && email === 'meshoron53@gmail.com' && password === 'shoron4545@') {
-      const hashedPassword = await bcrypt.hash(password, 10);
-      const userData = {
-        name: 'Super Admin',
-        email,
-        password: hashedPassword,
-        role: 'Super Admin',
-        status: 'active',
-        join_date: admin.firestore.FieldValue.serverTimestamp()
-      };
-      await userRef.set(userData);
-      user = userData;
-    }
+    // Bootstrap admin feature disabled - admin must be created manually or through signup
 
     if (!user || !(await bcrypt.compare(password, user.password))) {
       return res.status(400).json({ error: 'Invalid credentials' });
     }
 
     if (user.status === 'blocked') {
-      return res.status(403).json({ error: 'Account is blocked' });
+      return res.status(403).json({ error: 'Your account has been blocked by an administrator.' });
+    }
+    
+    if (user.status === 'suspended') {
+      if (user.suspended_until) {
+        const suspendDate = user.suspended_until.toDate();
+        if (suspendDate > new Date()) {
+          return res.status(403).json({ 
+            error: `Account suspended until ${suspendDate.toLocaleDateString()}. Reason: ${user.suspension_reason || 'Unknown'}` 
+          });
+        } else {
+          // Suspension expired, un-suspend
+          await userRef.update({ status: 'active', suspended_until: null, suspension_reason: null });
+          user.status = 'active';
+        }
+      } else {
+         return res.status(403).json({ error: 'Your account has been suspended indefinitely.' });
+      }
     }
 
     if (user.scheduled_deletion_at) {
@@ -1177,23 +1282,25 @@ app.post('/api/auth/delete-account', authenticate, async (req: any, res) => {
       return res.status(400).json({ error: 'Invalid password' });
     }
 
-    const scheduledDate = new Date();
-    scheduledDate.setDate(scheduledDate.getDate() + 30); // 30 days from now
+    // Immediately delete the user profile so the NID is freed
+    await userRef.delete();
 
-    await userRef.update({
-      scheduled_deletion_at: admin.firestore.Timestamp.fromDate(scheduledDate)
-    });
+    // Also try to clean up Auth if it was connected
+    try {
+      const authUser = await admin.auth().getUserByEmail(req.user.email);
+      await admin.auth().deleteUser(authUser.uid);
+    } catch {}
 
     await db_firebase.collection('activity_logs').add({
       user_email: req.user.email,
-      action: 'account_deletion_scheduled',
-      details: `Scheduled for ${scheduledDate.toISOString()}`,
+      action: 'account_deleted',
+      details: 'Account instantly deleted by user',
       timestamp: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    res.json({ success: true, scheduledDate: scheduledDate.toISOString() });
+    res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ error: 'Failed to schedule deletion: ' + err.message });
+    res.status(500).json({ error: 'Failed to delete account: ' + err.message });
   }
 });
 
@@ -1518,6 +1625,7 @@ app.post('/api/reports', authenticate, async (req: any, res) => {
       userId: email,
       user_email: email,
       user_name: userData.name || email,
+      user_photo: userData.photo_url || userData.profile_photo_url || null,
       title: title || category || 'Untitled Report',
       description,
       category: category || title || 'Other',
@@ -1536,14 +1644,25 @@ app.post('/api/reports', authenticate, async (req: any, res) => {
     await db_firebase.collection('reports').doc(reportId).set(newReport);
 
     // 2. CRITICAL: Also add to ai_analysis_queue so admin AI Analyzer sees it
+    //    Preserve full image_url (including https:// storage URLs) so AI can analyze photo
     await db_firebase.collection('ai_analysis_queue').doc(reportId).set(newReport);
 
-    // 3. Log the activity
+    // 3. Log the activity with report tracking
     await db_firebase.collection('activity_logs').add({
       user_email: email,
       user_name: userData.name || email,
       action: 'report_submitted',
       details: `Report submitted: "${title}" at ${location}`,
+      report_id: reportId,
+      created_at: admin.firestore.FieldValue.serverTimestamp(),
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    // 4. Add initial status to report_status_history for user tracking
+    await db_firebase.collection('report_status_history').add({
+      report_id: reportId,
+      status: 'pending',
+      notes: 'Report submitted and queued for AI analysis.',
       created_at: admin.firestore.FieldValue.serverTimestamp(),
       timestamp: admin.firestore.FieldValue.serverTimestamp()
     });
@@ -1558,11 +1677,27 @@ app.post('/api/reports', authenticate, async (req: any, res) => {
 app.get('/api/reports', authenticate, async (req: any, res) => {
   if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
   try {
-    const snapshot = await db_firebase.collection('reports')
-      .where('user_email', '==', req.user.email)
-      .orderBy('createdAt', 'desc')
-      .get();
-    const reports = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    // Try ordered query first, fall back to unordered if index missing
+    let reports: any[] = [];
+    try {
+      const snapshot = await db_firebase.collection('reports')
+        .where('user_email', '==', req.user.email)
+        .orderBy('createdAt', 'desc')
+        .get();
+      reports = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (indexErr) {
+      // Fallback: fetch without ordering if composite index not set up
+      const snapshot = await db_firebase.collection('reports')
+        .where('user_email', '==', req.user.email)
+        .get();
+      reports = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // Sort in memory
+      reports.sort((a: any, b: any) => {
+        const aTime = a.createdAt?._seconds || a.created_at?._seconds || 0;
+        const bTime = b.createdAt?._seconds || b.created_at?._seconds || 0;
+        return bTime - aTime;
+      });
+    }
     res.json(reports);
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to fetch reports: ' + err.message });
@@ -1572,24 +1707,72 @@ app.get('/api/reports', authenticate, async (req: any, res) => {
 // --- Extended Reports & Activity ---
 app.get('/api/reports/:id/history', authenticate, async (req: any, res) => {
   if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  const reportId = req.params.id;
   try {
-    // Check both legacy history and new activity logs for this report
-    const snapshot = await db_firebase.collection('activity_logs')
-      .where('details', '>=', `Report ID: ${req.params.id}`)
-      .where('details', '<=', `Report ID: ${req.params.id}\uf8ff`)
-      .get();
-    
-    // Also check report_status_history for backward compatibility
-    const legacySnapshot = await db_firebase.collection('report_status_history')
-      .where('report_id', '==', req.params.id)
+    // Fetch from report_status_history - primary source for user-facing timeline
+    const statusSnapshot = await db_firebase.collection('report_status_history')
+      .where('report_id', '==', reportId)
       .get();
 
-    const history = [
-      ...snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), status: doc.data().action })),
-      ...legacySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
-    ].sort((a: any, b: any) => (a.timestamp?.toDate() || 0) - (b.timestamp?.toDate() || 0));
+    // Also grab report_submitted activity logs for this report
+    const activitySnapshot = await db_firebase.collection('activity_logs')
+      .where('report_id', '==', reportId)
+      .get();
 
-    res.json(history);
+    const statusEntries = statusSnapshot.docs.map(doc => {
+      const data = doc.data();
+      const ts = data.timestamp || data.created_at;
+      const date = ts?._seconds ? new Date(ts._seconds * 1000) : (ts?.toDate ? ts.toDate() : new Date());
+      return { id: doc.id, ...data, _sortKey: date.getTime() };
+    });
+
+    const activityEntries = activitySnapshot.docs.map(doc => {
+      const data = doc.data();
+      const ts = data.timestamp || data.created_at;
+      const date = ts?._seconds ? new Date(ts._seconds * 1000) : (ts?.toDate ? ts.toDate() : new Date());
+      return { 
+        id: doc.id, 
+        ...data, 
+        status: data.action || 'submitted',
+        notes: data.details || 'Report activity logged',
+        _sortKey: date.getTime()
+      };
+    });
+
+    // Deduplicate and merge, sort by time ascending
+    const allEntries = [...statusEntries, ...activityEntries];
+    allEntries.sort((a: any, b: any) => (a._sortKey || 0) - (b._sortKey || 0));
+
+    // Serialize timestamps
+    const serialized = allEntries.map((entry: any) => {
+      const { _sortKey, ...rest } = entry;
+      const ts = rest.timestamp || rest.created_at;
+      let isoDate: string;
+      if (ts?._seconds) isoDate = new Date(ts._seconds * 1000).toISOString();
+      else if (ts?.toDate) isoDate = ts.toDate().toISOString();
+      else isoDate = new Date().toISOString();
+      return { ...rest, created_at: isoDate, timestamp: isoDate };
+    });
+
+    // If no history entries found, generate a synthetic submission entry from the report itself
+    if (serialized.length === 0) {
+      const reportDoc = await db_firebase.collection('reports').doc(reportId).get();
+      if (reportDoc.exists) {
+        const data = reportDoc.data() as any;
+        const ts = data.created_at || data.createdAt;
+        const isoDate = ts?._seconds ? new Date(ts._seconds * 1000).toISOString() : new Date().toISOString();
+        serialized.push({
+          id: 'initial',
+          report_id: reportId,
+          status: 'pending',
+          notes: 'Report submitted and queued for AI analysis.',
+          created_at: isoDate,
+          timestamp: isoDate
+        });
+      }
+    }
+
+    res.json(serialized);
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to fetch history: ' + err.message });
   }
@@ -1699,6 +1882,46 @@ app.delete('/api/admin/users/:id', authenticate, isAdmin, async (req, res) => {
     res.json({ success: true, message: 'User deleted successfully' });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to delete user: ' + err.message });
+  }
+});
+
+// Delete ALL users (except Super Admin) - Firestore Primary
+app.delete('/api/admin/users-all', authenticate, isAdmin, async (req: any, res: any) => {
+  if (req.user.role !== 'Super Admin') {
+    return res.status(403).json({ error: 'Only Super Admin can delete all users' });
+  }
+  
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+
+  try {
+    const usersSnapshot = await db_firebase.collection('users').get();
+    const batch = db_firebase.batch();
+    let deletedCount = 0;
+    const protectedEmails = ['meshoron53@gmail.com'];
+    
+    usersSnapshot.docs.forEach(doc => {
+      const userData = doc.data();
+      // Skip Super Admin and protected accounts
+      if (userData.role !== 'Super Admin' && !protectedEmails.includes(userData.email)) {
+        batch.delete(doc.ref);
+        deletedCount++;
+      }
+    });
+
+    await batch.commit();
+    
+    // Log the action
+    await db_firebase.collection('activity_logs').add({
+      user_email: req.user.email,
+      action: 'delete_all_users',
+      details: `Deleted ${deletedCount} users from the system`,
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({ success: true, message: `Successfully deleted ${deletedCount} users`, deletedCount });
+  } catch (err: any) {
+    console.error('Delete all users error:', err);
+    res.status(500).json({ error: 'Failed to delete users: ' + err.message });
   }
 });
 

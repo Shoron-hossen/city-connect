@@ -1333,19 +1333,24 @@ function MyReports({ user, setUser }: { user: User, setUser: (user: User | null)
   const [selectedReport, setSelectedReport] = useState<any>(null);
   const [history, setHistory] = useState<any[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [imageModal, setImageModal] = useState<string | null>(null);
   const navigate = useNavigate();
 
-  useEffect(() => {
+  const fetchReports = () => {
     request('/api/reports')
-      .then(setReports)
+      .then(data => setReports(Array.isArray(data) ? data : []))
+      .catch(() => setReports([]))
       .finally(() => setLoading(false));
-  }, []);
+  };
 
-  const fetchHistory = async (reportId: number) => {
+  useEffect(() => { fetchReports(); }, []);
+
+  const fetchHistory = async (reportId: string) => {
     setHistoryLoading(true);
+    setHistory([]);
     try {
       const data = await request(`/api/reports/${reportId}/history`);
-      setHistory(data);
+      setHistory(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error(err);
     } finally {
@@ -1358,19 +1363,19 @@ function MyReports({ user, setUser }: { user: User, setUser: (user: User | null)
     fetchHistory(report.id || report.reportId);
   };
 
-  const getStatusColor = (status: string) => {
+  const getStatusConfig = (status: string) => {
     switch (status) {
-      case 'pending': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
-      case 'pending_ai': return 'bg-orange-500/20 text-orange-400 border-orange-500/30';
-      case 'approved': return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
-      case 'initiated': return 'bg-purple-500/20 text-purple-400 border-purple-500/30';
-      case 'completed': return 'bg-green-500/20 text-green-400 border-green-500/30';
-      case 'rejected': return 'bg-red-500/20 text-red-400 border-red-500/30';
-      default: return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
+      case 'pending': return { color: 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30', dot: 'bg-yellow-400', label: 'Pending Review', icon: '⏳' };
+      case 'pending_manual': return { color: 'bg-orange-500/20 text-orange-300 border-orange-500/30', dot: 'bg-orange-400', label: 'Under Review', icon: '👁️' };
+      case 'pending_ai': return { color: 'bg-purple-500/20 text-purple-300 border-purple-500/30', dot: 'bg-purple-400', label: 'AI Analyzing', icon: '🤖' };
+      case 'approved': return { color: 'bg-blue-500/20 text-blue-300 border-blue-500/30', dot: 'bg-blue-400', label: 'Approved', icon: '✅' };
+      case 'initiated': return { color: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30', dot: 'bg-indigo-400', label: 'Action Initiated', icon: '🚀' };
+      case 'completed': return { color: 'bg-green-500/20 text-green-300 border-green-500/30', dot: 'bg-green-400', label: 'Completed', icon: '🎉' };
+      case 'rejected': return { color: 'bg-red-500/20 text-red-300 border-red-500/30', dot: 'bg-red-400', label: 'Rejected', icon: '❌' };
+      default: return { color: 'bg-gray-500/20 text-gray-400 border-gray-500/30', dot: 'bg-gray-400', label: status || 'Submitted', icon: '📋' };
     }
   };
 
-  // Helper to safely convert Firestore timestamp or ISO string to Date
   const toDate = (val: any): Date | null => {
     if (!val) return null;
     if (val instanceof Date) return val;
@@ -1381,20 +1386,66 @@ function MyReports({ user, setUser }: { user: User, setUser: (user: User | null)
     return null;
   };
 
+  const statusCounts = {
+    total: reports.length,
+    pending: reports.filter(r => ['pending', 'pending_manual', 'pending_ai'].includes(r.status)).length,
+    approved: reports.filter(r => ['approved', 'initiated', 'completed'].includes(r.status)).length,
+    rejected: reports.filter(r => r.status === 'rejected').length,
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-[#00103a] via-[#1a0b3c] to-[#600050] text-white">
       <Navbar user={user} setUser={setUser} />
-      <main className="max-w-5xl mx-auto px-6 py-12">
-        <div className="flex items-center gap-4 mb-8">
-          <button onClick={() => navigate('/dashboard')} className="p-2 hover:bg-white/10 rounded-full transition-colors">
-            <ArrowLeft size={24} />
+
+      {/* Image Lightbox */}
+      {imageModal && (
+        <div className="fixed inset-0 bg-black/95 z-[100] flex items-center justify-center p-6" onClick={() => setImageModal(null)}>
+          <button className="absolute top-6 right-6 text-white bg-white/20 rounded-full p-3 hover:bg-white/30 z-10" onClick={() => setImageModal(null)}>
+            <X size={28} />
           </button>
-          <h1 className="text-4xl font-bold tracking-tight">My Reports</h1>
+          <img src={imageModal} alt="Report" className="max-w-full max-h-[90vh] object-contain rounded-2xl shadow-2xl" referrerPolicy="no-referrer" onClick={e => e.stopPropagation()} />
+        </div>
+      )}
+
+      <main className="max-w-6xl mx-auto px-6 py-12">
+        {/* Header */}
+        <div className="flex items-center gap-4 mb-8">
+          <button onClick={() => navigate('/dashboard')} className="p-2.5 hover:bg-white/10 rounded-full transition-colors border border-white/10">
+            <ArrowLeft size={22} />
+          </button>
+          <div>
+            <h1 className="text-4xl font-bold tracking-tight">My Reports</h1>
+            <p className="text-gray-400 text-sm mt-1">Track all your submitted city issue reports</p>
+          </div>
+          <button onClick={fetchReports} className="ml-auto p-2.5 hover:bg-white/10 rounded-full transition-colors border border-white/10">
+            <RefreshCw size={20} />
+          </button>
+          <button onClick={() => navigate('/report')} className="bg-blue-600 hover:bg-blue-500 px-5 py-2.5 rounded-2xl font-bold transition-all text-sm flex items-center gap-2 shadow-lg shadow-blue-600/20">
+            <Camera size={18} /> New Report
+          </button>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Stats Strip */}
+        {!loading && reports.length > 0 && (
+          <div className="grid grid-cols-4 gap-3 mb-8">
+            {[
+              { label: 'Total', value: statusCounts.total, color: 'bg-blue-500/20 border-blue-500/30 text-blue-300' },
+              { label: 'Pending', value: statusCounts.pending, color: 'bg-yellow-500/20 border-yellow-500/30 text-yellow-300' },
+              { label: 'Approved', value: statusCounts.approved, color: 'bg-green-500/20 border-green-500/30 text-green-300' },
+              { label: 'Rejected', value: statusCounts.rejected, color: 'bg-red-500/20 border-red-500/30 text-red-300' },
+            ].map(s => (
+              <div key={s.label} className={`${s.color} border rounded-2xl p-4 text-center`}>
+                <p className="text-2xl font-bold">{s.value}</p>
+                <p className="text-xs font-medium opacity-80">{s.label}</p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
           {/* Reports List */}
-          <div className="lg:col-span-1 space-y-4">
+          <div className="lg:col-span-2 space-y-3">
+            <h2 className="text-sm font-bold uppercase tracking-widest text-gray-400 mb-4">Your Reports</h2>
             {loading ? (
               <div className="flex justify-center py-20">
                 <Loader2 className="animate-spin text-blue-400" size={40} />
@@ -1402,92 +1453,156 @@ function MyReports({ user, setUser }: { user: User, setUser: (user: User | null)
             ) : reports.length > 0 ? (
               reports.map((report) => {
                 const reportDate = toDate(report.created_at || report.createdAt);
+                const cfg = getStatusConfig(report.status);
+                const isSelected = selectedReport?.id === report.id;
                 return (
                   <div
                     key={report.id}
                     onClick={() => handleReportClick(report)}
-                    className={`p-5 rounded-3xl border transition-all cursor-pointer ${selectedReport?.id === report.id ? 'bg-white/15 border-blue-500/50 shadow-lg shadow-blue-500/10' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}
+                    className={`rounded-2xl border transition-all cursor-pointer overflow-hidden group ${isSelected ? 'bg-white/15 border-blue-500/60 shadow-lg shadow-blue-500/10' : 'bg-white/5 border-white/10 hover:bg-white/10 hover:border-white/20'}`}
                   >
-                    <div className="flex justify-between items-start mb-3">
-                      <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border ${getStatusColor(report.status)}`}>
-                        {report.status || 'pending'}
-                      </span>
-                      <span className="text-[10px] text-gray-400">{reportDate ? reportDate.toLocaleDateString() : '-'}</span>
+                    <div className="flex gap-0">
+                      {/* Thumbnail */}
+                      <div className="w-20 h-20 shrink-0 bg-white/5 relative overflow-hidden">
+                        {report.image_url ? (
+                          <img src={report.image_url} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" referrerPolicy="no-referrer" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <Camera size={24} className="text-gray-500" />
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-3 flex-1 min-w-0">
+                        <div className="flex justify-between items-start mb-1">
+                          <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider border ${cfg.color}`}>
+                            {cfg.icon} {cfg.label}
+                          </span>
+                          <span className="text-[9px] text-gray-500 shrink-0 ml-1">{reportDate ? reportDate.toLocaleDateString() : '-'}</span>
+                        </div>
+                        <h3 className="font-bold text-sm mb-0.5 truncate">{report.title}</h3>
+                        <p className="text-gray-400 text-[11px] flex items-center gap-1 truncate">
+                          <MapPin size={10} /> {(report.location || '').split(',')[0]}
+                        </p>
+                      </div>
                     </div>
-                    <h3 className="font-bold text-lg mb-1 truncate">{report.title}</h3>
-                    <p className="text-gray-400 text-sm flex items-center gap-1 truncate">
-                      <MapPin size={14} /> {(report.location || '').split(',')[0]}
-                    </p>
                   </div>
                 );
               })
             ) : (
-              <div className="text-center py-20 bg-white/5 rounded-3xl border border-white/10">
+              <div className="text-center py-16 bg-white/5 rounded-3xl border border-white/10">
                 <FileText size={48} className="mx-auto mb-4 opacity-20" />
-                <p className="text-gray-400">No reports submitted yet</p>
-                <button onClick={() => navigate('/report')} className="mt-4 text-blue-400 font-medium">Submit your first report</button>
+                <p className="text-gray-400 mb-2">No reports submitted yet</p>
+                <button onClick={() => navigate('/report')} className="mt-2 bg-blue-600 hover:bg-blue-500 px-6 py-2.5 rounded-2xl font-bold text-sm transition-all">
+                  Submit First Report
+                </button>
               </div>
             )}
           </div>
 
-          {/* Report Details & Timeline */}
-          <div className="lg:col-span-2">
+          {/* Report Detail + Timeline */}
+          <div className="lg:col-span-3">
             {selectedReport ? (
-              <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-[40px] p-8 md:p-10 sticky top-24">
-                <div className="flex flex-col md:flex-row justify-between gap-6 mb-10">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-4">
-                      <span className={`px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-widest border ${getStatusColor(selectedReport.status)}`}>
-                        {selectedReport.status}
-                      </span>
-                      <span className="text-gray-400 text-sm">{selectedReport.category}</span>
+              <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-[32px] overflow-hidden sticky top-24">
+                {/* Report Image Header */}
+                {selectedReport.image_url && (
+                  <div className="relative h-52 overflow-hidden group cursor-pointer" onClick={() => setImageModal(selectedReport.image_url)}>
+                    <img src={selectedReport.image_url} alt="Report" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" referrerPolicy="no-referrer" />
+                    <div className="absolute inset-0 bg-gradient-to-t from-[#00103a]/90 via-transparent to-transparent" />
+                    <div className="absolute bottom-4 right-4 bg-white/20 backdrop-blur-sm text-white px-3 py-1.5 rounded-xl text-xs font-medium opacity-0 group-hover:opacity-100 transition-opacity">
+                      Click to zoom ↗
                     </div>
-                    <h2 className="text-3xl md:text-4xl font-bold mb-4 leading-tight">{selectedReport.title}</h2>
-                    <p className="text-gray-300 text-lg mb-6 leading-relaxed">{selectedReport.description}</p>
-                    <div className="flex items-center gap-2 text-gray-400 bg-white/5 w-fit px-4 py-2 rounded-2xl border border-white/5">
-                      <MapPin size={18} className="text-blue-400" />
-                      <span className="text-sm">{selectedReport.location}</span>
+                    <div className="absolute top-4 left-4">
+                      <span className={`px-3 py-1.5 rounded-full text-xs font-bold border backdrop-blur-sm ${getStatusConfig(selectedReport.status).color}`}>
+                        {getStatusConfig(selectedReport.status).icon} {getStatusConfig(selectedReport.status).label}
+                      </span>
                     </div>
                   </div>
-                  {selectedReport.image_url && (
-                    <div className="w-full md:w-48 h-48 rounded-3xl overflow-hidden border border-white/10 shrink-0">
-                      <img src={selectedReport.image_url} alt="Report" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                )}
+
+                <div className="p-7">
+                  {/* Status badges */}
+                  {!selectedReport.image_url && (
+                    <div className="flex items-center gap-2 mb-4">
+                      <span className={`px-3 py-1.5 rounded-full text-xs font-bold border ${getStatusConfig(selectedReport.status).color}`}>
+                        {getStatusConfig(selectedReport.status).icon} {getStatusConfig(selectedReport.status).label}
+                      </span>
+                      <span className="bg-white/10 text-gray-300 px-3 py-1.5 rounded-full text-xs font-medium">{selectedReport.category}</span>
                     </div>
                   )}
-                </div>
 
-                <div className="border-t border-white/10 pt-10">
-                  <h3 className="text-xl font-bold mb-8 flex items-center gap-2">
-                    <Activity size={20} className="text-blue-400" /> Progress Timeline
-                  </h3>
-                  
-                  <div className="relative space-y-8 before:absolute before:left-[11px] before:top-2 before:bottom-2 before:w-0.5 before:bg-white/10">
+                  <h2 className="text-2xl font-bold mb-2 leading-tight">{selectedReport.title}</h2>
+                  <p className="text-gray-300 text-sm leading-relaxed mb-4">{selectedReport.description}</p>
+
+                  <div className="flex items-center gap-2 text-gray-400 text-sm mb-2">
+                    <MapPin size={14} className="text-blue-400 shrink-0" />
+                    <span className="truncate">{selectedReport.location}</span>
+                  </div>
+
+                  <div className="flex items-center gap-2 text-gray-500 text-xs mb-6">
+                    <Calendar size={12} />
+                    <span>Submitted: {(() => { const d = toDate(selectedReport.created_at || selectedReport.createdAt); return d ? d.toLocaleString() : '—'; })()}</span>
+                  </div>
+
+                  {/* Admin Notes (if any) */}
+                  {selectedReport.admin_notes && (
+                    <div className="bg-blue-500/10 border border-blue-500/20 rounded-2xl p-4 mb-6">
+                      <p className="text-xs font-bold text-blue-400 uppercase tracking-wider mb-1">Admin Note</p>
+                      <p className="text-sm text-blue-200">{selectedReport.admin_notes}</p>
+                    </div>
+                  )}
+
+                  {/* Timeline */}
+                  <div className="border-t border-white/10 pt-6">
+                    <h3 className="text-sm font-bold uppercase tracking-widest text-gray-400 mb-6 flex items-center gap-2">
+                      <Activity size={16} className="text-blue-400" /> Progress Timeline
+                    </h3>
+
                     {historyLoading ? (
-                      <div className="flex justify-center py-10">
-                        <Loader2 className="animate-spin text-blue-400" />
+                      <div className="flex justify-center py-8">
+                        <Loader2 className="animate-spin text-blue-400" size={28} />
                       </div>
-                    ) : history.map((step, idx) => (
-                      <div key={step.id} className="relative pl-10">
-                        <div className={`absolute left-0 top-1.5 w-6 h-6 rounded-full border-4 border-[#1a0b3c] z-10 ${idx === history.length - 1 ? 'bg-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.5)]' : 'bg-gray-600'}`}></div>
-                        <div>
-                          <div className="flex items-center gap-3 mb-1">
-                            <span className="font-bold text-lg capitalize">{step.status}</span>
-                            <span className="text-xs text-gray-400">{new Date(step.created_at).toLocaleString()}</span>
-                          </div>
-                          <p className="text-gray-400 text-sm">{step.notes}</p>
-                        </div>
+                    ) : history.length > 0 ? (
+                      <div className="relative space-y-5 before:absolute before:left-[11px] before:top-2 before:bottom-2 before:w-0.5 before:bg-white/10">
+                        {history.map((step, idx) => {
+                          const stepCfg = getStatusConfig(step.status);
+                          const isLatest = idx === history.length - 1;
+                          const stepDate = toDate(step.created_at || step.timestamp);
+                          return (
+                            <div key={step.id || idx} className="relative pl-9">
+                              <div className={`absolute left-0 top-1 w-[22px] h-[22px] rounded-full border-4 border-[#0a0a1f] z-10 flex items-center justify-center ${isLatest ? stepCfg.dot + ' shadow-[0_0_12px_rgba(59,130,246,0.6)]' : 'bg-gray-600'}`}>
+                                {isLatest && <div className="w-2 h-2 bg-white rounded-full" />}
+                              </div>
+                              <div className={`${isLatest ? 'bg-white/10 border-white/20' : 'bg-white/5 border-white/10'} border rounded-2xl p-4`}>
+                                <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-bold capitalize">{stepCfg.icon} {stepCfg.label}</span>
+                                    {isLatest && <span className="bg-blue-500/30 text-blue-300 px-2 py-0.5 rounded-full text-[10px] font-bold">CURRENT</span>}
+                                  </div>
+                                  <span className="text-[11px] text-gray-500">{stepDate ? stepDate.toLocaleString() : '—'}</span>
+                                </div>
+                                <p className="text-gray-400 text-xs leading-relaxed">{step.notes || step.details || 'Status updated.'}</p>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
-                    ))}
+                    ) : (
+                      <div className="text-center py-8 bg-white/5 rounded-2xl border border-white/10">
+                        <Activity size={32} className="mx-auto mb-3 opacity-20" />
+                        <p className="text-gray-500 text-sm">No timeline events yet</p>
+                        <p className="text-gray-600 text-xs mt-1">Your report is being processed</p>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
             ) : (
-              <div className="h-full min-h-[400px] flex flex-col items-center justify-center bg-white/5 border border-white/10 rounded-[40px] text-center p-10">
-                <div className="w-24 h-24 bg-white/5 rounded-full flex items-center justify-center mb-6">
-                  <Activity size={48} className="text-blue-400/30" />
+              <div className="h-full min-h-[400px] flex flex-col items-center justify-center bg-white/5 border border-white/10 rounded-[32px] text-center p-10">
+                <div className="w-20 h-20 bg-blue-500/10 rounded-full flex items-center justify-center mb-6 border border-blue-500/20">
+                  <Activity size={40} className="text-blue-400/50" />
                 </div>
                 <h2 className="text-2xl font-bold mb-2">Select a Report</h2>
-                <p className="text-gray-400 max-w-xs">Choose a report from the list to track its real-time progress and timeline.</p>
+                <p className="text-gray-400 max-w-xs text-sm leading-relaxed">Choose a report from the left panel to view details, photo, and real-time progress timeline.</p>
               </div>
             )}
           </div>
@@ -1546,9 +1661,77 @@ function ReportIssue({ user, setUser }: { user: User, setUser: (user: User | nul
     setAnalyzing(true);
 
     try {
-      // 1. Analyze image with server Gemini endpoint
+      // 1. INTELLIGENT AI Validation: Check if photo + description together make a valid report
       const base64Data = image.split(',')[1];
-      const response = await request('/api/gemini/public', {
+      const validationResponse = await request('/api/gemini/public', {
+        method: 'POST',
+        body: JSON.stringify({
+          prompt: `You are an intelligent validator for city issue reports. Your job is to analyze BOTH the image AND the user's description together to determine if this is a valid report.
+
+IMPORTANT: The user's description provides CONTEXT for what to look for in the image. Do not reject just because you see a person - the person might be pointing at the issue, or the issue might be near the person.
+
+User Selected Category: "${issueType}"
+User Description: "${description}"
+
+Your Analysis Process:
+1. Carefully examine the ENTIRE image - look at background, corners, edges, all areas
+2. Read the user's description carefully - they may indicate WHERE to look (e.g., "left side", "behind the person", "near the building")
+3. Check if the described issue exists in the image, even if other objects (people, cars, etc.) are also present
+4. Determine if the combination of photo + description constitutes a valid report
+
+Validation Guidelines:
+- If user says "look at left side" or mentions specific location → Check that location carefully
+- If image shows a person AND garbage → VALID if reporting garbage (person provides scale/context)
+- If image shows a person AND crime scene → VALID if reporting crime
+- If image shows road AND damage/potholes → VALID for road damage (even if cars/people present)
+- If user describes specific details → Those details MUST be visible in the image
+- Reject ONLY if: The described issue is clearly NOT in the image, or description completely contradicts the image
+
+Examples of VALID reports:
+- Category: Crime, Description: "Theft happening at left side", Image: shows people and suspicious activity on left
+- Category: Garbage, Description: "Pile of trash behind the person", Image: shows person with garbage visible behind them
+- Category: Road Damage, Description: "Big pothole near the red car", Image: shows road with pothole and red car
+
+Examples of INVALID reports:
+- Category: Crime, Description: "Robbery in progress", Image: shows only empty street with no people
+- Category: Garbage, Description: "Trash everywhere", Image: shows only a clean park with no garbage
+- Category: Street Light, Description: "Broken light pole", Image: shows only a building with no street light
+
+Return a JSON object with exactly these keys:
+{
+  "is_valid": boolean (true if photo+description together show the reported issue),
+  "actual_content": string (describe everything you see in the image in detail),
+  "detected_issue": string (what issue did you find that matches the report, or "none"),
+  "issue_location": string (where in the image is the issue: left, right, center, background, foreground, etc.),
+  "category_match": boolean (does the detected issue match the selected category?),
+  "description_match": boolean (does the image support the specific details in the description?),
+  "confidence": number (0-1, how confident are you),
+  "reasoning": string (explain your decision: what did you see, where, and how it matches or doesn't match the description),
+  "suggested_action": string (if valid, confirm; if invalid, explain what's wrong)
+}`,
+          images: [{ data: base64Data, mimeType: 'image/jpeg' }]
+        })
+      });
+
+      let validationResult;
+      try {
+        validationResult = JSON.parse(validationResponse.response || "{}");
+      } catch (e) {
+        validationResult = { 
+          is_valid: false, 
+          reasoning: "AI validation failed. Please try again with a clearer photo that matches your selected category." 
+        };
+      }
+
+      // 2. REJECT if validation fails
+      if (!validationResult.is_valid) {
+        setAnalyzing(false);
+        alert(`⚠️ Report Rejected\n\nReason: ${validationResult.reasoning}\n\nWhat we detected in your photo:\n${validationResult.actual_content || 'Could not analyze image'}\n\nYour report:\n• Category: ${issueType}\n• Description: "${description}"\n\n💡 Tips for a valid report:\n1. Make sure the ${issueType.toLowerCase()} is clearly visible in your photo\n2. Your description should match what is in the image\n3. If describing a location (e.g., "left side"), make sure it's visible\n4. The main focus should be the ${issueType.toLowerCase()}, not other objects\n\nPlease try again with a more accurate photo and description.`);
+        return;
+      }
+
+      // 3. If valid, proceed with categorization
+      const categoryResponse = await request('/api/gemini/public', {
         method: 'POST',
         body: JSON.stringify({
           prompt: `Analyze this image for urban issues. Categorize it as one of: Garbage, Crime, Road Damage, Street Light, Other. Return a JSON object with exactly these keys: "category" (string matching the enum), "confidence" (number between 0 and 1), "description" (brief description of what is seen).`,
@@ -1558,12 +1741,12 @@ function ReportIssue({ user, setUser }: { user: User, setUser: (user: User | nul
 
       let aiResult;
       try {
-        aiResult = JSON.parse(response.response || "{}");
+        aiResult = JSON.parse(categoryResponse.response || "{}");
       } catch (e) {
-        aiResult = { category: issueType, confidence: 0.8, description: "AI analysis failed, using user input." };
+        aiResult = { category: issueType, confidence: 0.8, description: description };
       }
 
-      // 2. Save to Backend — MUST await so report is saved before navigating
+      // 4. Save to Backend
       await request('/api/reports', {
         method: 'POST',
         body: JSON.stringify({
@@ -1571,12 +1754,15 @@ function ReportIssue({ user, setUser }: { user: User, setUser: (user: User | nul
           description: description,
           category: aiResult.category || issueType,
           location: location,
-          image_url: image, // Send full base64 image — server handles storage upload
-          ai_analysis: JSON.stringify(aiResult)
+          image_url: image,
+          ai_analysis: JSON.stringify({
+            ...aiResult,
+            validation: validationResult
+          })
         })
       });
 
-      // 3. Navigate to success with state
+      // 5. Navigate to success
       navigate('/success', { state: { issueType: aiResult.category || issueType, location } });
 
     } catch (error) {
@@ -1740,7 +1926,7 @@ function AdminDashboard({ user, setUser }: { user: User, setUser: (user: User | 
           </button>
         </div>
         
-        <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
+        <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
           <button onClick={() => setActiveTab('overview')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${activeTab === 'overview' ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-white/10 hover:text-white'}`}>
             <BarChart3 size={20} /> Overview
           </button>
@@ -1748,10 +1934,14 @@ function AdminDashboard({ user, setUser }: { user: User, setUser: (user: User | 
             <Users size={20} /> User Management
           </button>
           <button onClick={() => setActiveTab('reports')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${activeTab === 'reports' ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-white/10 hover:text-white'}`}>
-            <FileText size={20} /> Reports
+            <FileText size={20} /> All Reports
           </button>
           <button onClick={() => setActiveTab('ai-analyzer')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${activeTab === 'ai-analyzer' ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-white/10 hover:text-white'}`}>
             <Brain size={20} /> AI Analyzer
+          </button>
+          <button onClick={() => setActiveTab('manual-reports')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors relative ${activeTab === 'manual-reports' ? 'bg-orange-600 text-white' : 'text-gray-300 hover:bg-white/10 hover:text-white'}`}>
+            <ShieldCheck size={20} /> Manual Review
+            <span className="ml-auto text-[10px] font-bold bg-orange-500/30 text-orange-300 px-1.5 py-0.5 rounded-full">PENDING</span>
           </button>
           <button onClick={() => setActiveTab('activity')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${activeTab === 'activity' ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-white/10 hover:text-white'}`}>
             <Activity size={20} /> Activity Logs
@@ -1797,6 +1987,7 @@ function AdminDashboard({ user, setUser }: { user: User, setUser: (user: User | 
           {activeTab === 'users' && <AdminUsers />}
           {activeTab === 'reports' && <AdminReports />}
           {activeTab === 'ai-analyzer' && <AdminAIAnalyzer />}
+          {activeTab === 'manual-reports' && <AdminManualReports />}
           {activeTab === 'activity' && <AdminActivity />}
           {activeTab === 'settings' && <AdminSettings />}
         </div>
@@ -1889,6 +2080,10 @@ function AdminOverview() {
 function AdminUsers() {
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedUser, setSelectedUser] = useState<any>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [userToDelete, setUserToDelete] = useState<any>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchUsers = () => {
     request('/api/admin/users')
@@ -1912,111 +2107,360 @@ function AdminUsers() {
     }
   };
 
-  const handleDeleteUser = async (userId: string) => {
-    if (confirm(`Are you sure you want to delete ${userId}? This action is permanent.`)) {
-      try {
-        await request(`/api/admin/users/${userId}`, { method: 'DELETE' });
-        fetchUsers();
-      } catch (err: any) {
-        alert('Failed to delete user: ' + err.message);
-      }
+  const confirmDeleteUser = (user: any) => {
+    setUserToDelete(user);
+  };
+
+  const handleDeleteUser = async () => {
+    if (!userToDelete) return;
+    setDeleting(true);
+    try {
+      await request(`/api/admin/users/${userToDelete.id}`, { method: 'DELETE' });
+      setUserToDelete(null);
+      fetchUsers();
+    } catch (err: any) {
+      alert('Failed to delete user: ' + err.message);
+    } finally {
+      setDeleting(false);
     }
   };
+
+  const filteredUsers = users.filter(u => 
+    u.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    u.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    u.nid_number?.includes(searchTerm)
+  );
 
   if (loading) return <div className="flex justify-center py-20"><Loader2 className="animate-spin text-blue-600" size={40} /></div>;
 
   return (
-    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden max-w-7xl mx-auto">
-      <div className="p-6 border-b border-gray-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-gray-50/50">
-        <h3 className="text-lg font-bold text-gray-800">User Management</h3>
-        <div className="flex gap-2 w-full sm:w-auto">
-          <div className="relative flex-1 sm:flex-none">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
-            <input type="text" placeholder="Search users..." className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-full sm:w-64" />
+    <div className="space-y-6">
+      {/* Delete Confirmation Modal */}
+      {userToDelete && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center">
+                <AlertTriangle className="text-red-600" size={24} />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-gray-900">Delete User?</h3>
+                <p className="text-sm text-gray-500">This action cannot be undone.</p>
+              </div>
+            </div>
+            
+            <div className="bg-gray-50 rounded-xl p-4 mb-6">
+              <div className="flex items-center gap-3">
+                {(userToDelete.photo_url || userToDelete.profile_photo_url) ? (
+                  <img src={userToDelete.photo_url || userToDelete.profile_photo_url} alt={userToDelete.name} className="w-10 h-10 rounded-full object-cover" referrerPolicy="no-referrer" />
+                ) : (
+                  <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-sm">
+                    {userToDelete.name?.charAt(0) || '?'}
+                  </div>
+                )}
+                <div>
+                  <p className="font-semibold text-gray-900">{userToDelete.name}</p>
+                  <p className="text-sm text-gray-500">{userToDelete.email}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setUserToDelete(null)}
+                className="flex-1 px-4 py-2.5 border border-gray-200 text-gray-700 rounded-xl font-medium hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={handleDeleteUser}
+                disabled={deleting}
+                className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl font-medium hover:bg-red-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {deleting ? <Loader2 className="animate-spin" size={18} /> : <Trash2 size={18} />}
+                {deleting ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
           </div>
-          <button className="p-2 border border-gray-200 rounded-lg text-gray-500 hover:bg-gray-50"><Filter size={18} /></button>
         </div>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-left border-collapse">
-          <thead>
-            <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider border-b border-gray-200">
-              <th className="px-6 py-4 font-semibold">User</th>
-              <th className="px-6 py-4 font-semibold">Email / Phone</th>
-              <th className="px-6 py-4 font-semibold">Face Match</th>
-              <th className="px-6 py-4 font-semibold">Role</th>
-              <th className="px-6 py-4 font-semibold">Status</th>
-              <th className="px-6 py-4 font-semibold text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {users.map(u => (
-              <tr key={u.id} className="hover:bg-gray-50/50 transition-colors">
-                <td className="px-6 py-4 font-medium text-gray-900">
-                  <div className="flex items-center gap-3">
-                    {(u.photo_url || u.profile_photo_url) ? (
-                      <img src={u.photo_url || u.profile_photo_url} alt={u.name} className="w-8 h-8 rounded-full object-cover border border-gray-200" referrerPolicy="no-referrer" />
-                    ) : (
-                      <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-xs">
-                        {u.name?.charAt(0) || '?'}
-                      </div>
-                    )}
+      )}
+
+      {/* User Detail Modal */}
+      {selectedUser && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-4xl w-full max-h-[90vh] overflow-y-auto shadow-2xl">
+            <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+              <h3 className="text-xl font-bold text-gray-800">User Details</h3>
+              <button onClick={() => setSelectedUser(null)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                <X size={24} className="text-gray-500" />
+              </button>
+            </div>
+            <div className="p-6 space-y-6">
+              {/* Basic Info */}
+              <div className="flex items-start gap-6">
+                {(selectedUser.photo_url || selectedUser.profile_photo_url) ? (
+                  <img 
+                    src={selectedUser.photo_url || selectedUser.profile_photo_url} 
+                    alt={selectedUser.name} 
+                    className="w-24 h-24 rounded-2xl object-cover border-2 border-gray-200" 
+                    referrerPolicy="no-referrer" 
+                  />
+                ) : (
+                  <div className="w-24 h-24 rounded-2xl bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-2xl">
+                    {selectedUser.name?.charAt(0) || '?'}
+                  </div>
+                )}
+                <div className="flex-1">
+                  <h4 className="text-2xl font-bold text-gray-900">{selectedUser.name}</h4>
+                  <p className="text-gray-500">{selectedUser.email}</p>
+                  {selectedUser.phone && <p className="text-gray-500">{selectedUser.phone}</p>}
+                  <div className="flex gap-2 mt-3">
+                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+                      selectedUser.role === 'Super Admin' ? 'bg-purple-100 text-purple-700' : 
+                      selectedUser.role === 'admin' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700'
+                    }`}>
+                      {selectedUser.role}
+                    </span>
+                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+                      selectedUser.status === 'active' ? 'bg-green-100 text-green-700' : 
+                      selectedUser.status === 'suspended' ? 'bg-orange-100 text-orange-700' : 
+                      'bg-red-100 text-red-700'
+                    }`}>
+                      {selectedUser.status || 'active'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* NID Information */}
+              <div className="bg-gray-50 rounded-2xl p-6">
+                <h5 className="font-bold text-gray-800 mb-4 flex items-center gap-2">
+                  <Shield className="text-blue-600" size={20} />
+                  Identity Verification
+                </h5>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {selectedUser.nid_number && (
                     <div>
-                      <p className="font-semibold">{u.name}</p>
-                      <p className="text-xs text-gray-400">{new Date(u.join_date).toLocaleDateString()}</p>
+                      <p className="text-xs text-gray-500 uppercase tracking-wider">NID Number</p>
+                      <p className="font-mono font-medium text-gray-900">{selectedUser.nid_number}</p>
                     </div>
-                    {u.fraud_alert === 1 && (
-                      <AlertTriangle size={16} className="text-red-500 animate-pulse" />
-                    )}
-                  </div>
-                </td>
-                <td className="px-6 py-4 text-gray-500">
+                  )}
+                  {selectedUser.birth_certificate_number && (
+                    <div>
+                      <p className="text-xs text-gray-500 uppercase tracking-wider">Birth Certificate</p>
+                      <p className="font-mono font-medium text-gray-900">{selectedUser.birth_certificate_number}</p>
+                    </div>
+                  )}
                   <div>
-                    <p>{u.email}</p>
-                    {u.phone && <p className="text-xs text-gray-400">{u.phone}</p>}
+                    <p className="text-xs text-gray-500 uppercase tracking-wider">Face Match Confidence</p>
+                    <div className="flex items-center gap-2">
+                      <div className={`w-3 h-3 rounded-full ${selectedUser.face_confidence > 0.8 ? 'bg-green-500' : selectedUser.face_confidence > 0.6 ? 'bg-yellow-500' : 'bg-red-500'}`}></div>
+                      <span className="font-medium">{((selectedUser.face_confidence || 0) * 100).toFixed(1)}%</span>
+                    </div>
                   </div>
-                </td>
-                <td className="px-6 py-4">
-                  <div className="flex items-center gap-2">
-                    <div className={`w-2 h-2 rounded-full ${u.face_confidence > 0.8 ? 'bg-green-500' : u.face_confidence > 0.6 ? 'bg-yellow-500' : 'bg-red-500'}`}></div>
-                    <span className="text-sm font-medium">{((u.face_confidence || 0) * 100).toFixed(1)}%</span>
+                  <div>
+                    <p className="text-xs text-gray-500 uppercase tracking-wider">Verified</p>
+                    <p className="font-medium">{selectedUser.is_verified ? 'Yes' : 'Pending'}</p>
                   </div>
-                </td>
-                <td className="px-6 py-4">
-                  <select 
-                    value={u.role} 
-                    onChange={(e) => handleUpdateRole(u.id, e.target.value, u.status)}
-                    className={`text-sm rounded-full px-3 py-1 font-medium border-none focus:ring-2 focus:ring-blue-500 cursor-pointer ${
-                      u.role === 'Super Admin' ? 'bg-purple-100 text-purple-700' : 
-                      u.role === 'admin' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700'
-                    }`}
-                    disabled={u.role === 'Super Admin'}
-                  >
-                    <option value="citizen">Citizen</option>
-                    <option value="admin">Admin</option>
-                    {u.role === 'Super Admin' && <option value="Super Admin">Super Admin</option>}
-                  </select>
-                </td>
-                <td className="px-6 py-4">
-                  <select 
-                    value={u.status || 'active'} 
-                    onChange={(e) => handleUpdateRole(u.id, u.role, e.target.value)}
-                    className={`text-sm rounded-full px-3 py-1 font-medium border-none focus:ring-2 focus:ring-blue-500 cursor-pointer ${
-                      u.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
-                    }`}
-                    disabled={u.role === 'Super Admin'}
-                  >
-                    <option value="active">Active</option>
-                    <option value="blocked">Blocked</option>
-                  </select>
-                </td>
-                <td className="px-6 py-4 text-right">
-                  <button onClick={() => handleDeleteUser(u.id)} className="text-red-600 hover:text-red-800 text-sm font-medium" disabled={u.role === 'Super Admin'}>Delete</button>
-                </td>
+                </div>
+              </div>
+
+              {/* Photos */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {selectedUser.nid_photo_url && (
+                  <div>
+                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">NID Document Photo</p>
+                    <img 
+                      src={selectedUser.nid_photo_url} 
+                      alt="NID" 
+                      className="w-full h-48 object-cover rounded-xl border border-gray-200 cursor-pointer hover:opacity-90 transition-opacity"
+                      onClick={() => window.open(selectedUser.nid_photo_url, '_blank')}
+                      referrerPolicy="no-referrer"
+                    />
+                  </div>
+                )}
+                {selectedUser.selfie_photo_url && (
+                  <div>
+                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Selfie Photo</p>
+                    <img 
+                      src={selectedUser.selfie_photo_url} 
+                      alt="Selfie" 
+                      className="w-full h-48 object-cover rounded-xl border border-gray-200 cursor-pointer hover:opacity-90 transition-opacity"
+                      onClick={() => window.open(selectedUser.selfie_photo_url, '_blank')}
+                      referrerPolicy="no-referrer"
+                    />
+                  </div>
+                )}
+                {(selectedUser.photo_url || selectedUser.profile_photo_url) && (
+                  <div>
+                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Profile Photo</p>
+                    <img 
+                      src={selectedUser.photo_url || selectedUser.profile_photo_url} 
+                      alt="Profile" 
+                      className="w-full h-48 object-cover rounded-xl border border-gray-200 cursor-pointer hover:opacity-90 transition-opacity"
+                      onClick={() => window.open(selectedUser.photo_url || selectedUser.profile_photo_url, '_blank')}
+                      referrerPolicy="no-referrer"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Additional Info */}
+              <div className="bg-gray-50 rounded-2xl p-6">
+                <h5 className="font-bold text-gray-800 mb-4">Account Information</h5>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div>
+                    <p className="text-gray-500">Joined</p>
+                    <p className="font-medium">{new Date(selectedUser.join_date).toLocaleDateString()}</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-500">Location</p>
+                    <p className="font-medium">{selectedUser.location || 'Not set'}</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-500">User ID</p>
+                    <p className="font-medium text-xs">{selectedUser.id}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden max-w-7xl mx-auto">
+        <div className="p-6 border-b border-gray-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-gray-50/50">
+          <div>
+            <h3 className="text-lg font-bold text-gray-800">User Management</h3>
+            <p className="text-sm text-gray-500">{users.length} total users</p>
+          </div>
+          <div className="flex gap-2 w-full sm:w-auto">
+            <div className="relative flex-1 sm:flex-none">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+              <input 
+                type="text" 
+                placeholder="Search users..." 
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-full sm:w-64" 
+              />
+            </div>
+            <button className="p-2 border border-gray-200 rounded-lg text-gray-500 hover:bg-gray-50"><Filter size={18} /></button>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider border-b border-gray-200">
+                <th className="px-6 py-4 font-semibold">User</th>
+                <th className="px-6 py-4 font-semibold">NID/Document</th>
+                <th className="px-6 py-4 font-semibold">Face Match</th>
+                <th className="px-6 py-4 font-semibold">Role</th>
+                <th className="px-6 py-4 font-semibold">Status</th>
+                <th className="px-6 py-4 font-semibold text-right">Actions</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {filteredUsers.map(u => (
+                <tr key={u.id} className="hover:bg-gray-50/50 transition-colors">
+                  <td className="px-6 py-4 font-medium text-gray-900">
+                    <div className="flex items-center gap-3">
+                      {(u.photo_url || u.profile_photo_url) ? (
+                        <img src={u.photo_url || u.profile_photo_url} alt={u.name} className="w-10 h-10 rounded-full object-cover border border-gray-200" referrerPolicy="no-referrer" />
+                      ) : (
+                        <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-xs">
+                          {u.name?.charAt(0) || '?'}
+                        </div>
+                      )}
+                      <div>
+                        <p className="font-semibold">{u.name}</p>
+                        <p className="text-xs text-gray-400">{u.email}</p>
+                      </div>
+                      {u.fraud_alert === 1 && (
+                        <AlertTriangle size={16} className="text-red-500 animate-pulse" />
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 text-gray-500">
+                    <div>
+                      {u.nid_number ? (
+                        <p className="font-mono text-sm">NID: {u.nid_number}</p>
+                      ) : u.birth_certificate_number ? (
+                        <p className="font-mono text-sm">BC: {u.birth_certificate_number}</p>
+                      ) : (
+                        <p className="text-xs text-gray-400">No document</p>
+                      )}
+                      {u.nid_photo_url && (
+                        <span className="inline-flex items-center gap-1 text-xs text-green-600 mt-1">
+                          <CheckCircle size={12} /> Photo available
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="flex items-center gap-2">
+                      <div className={`w-2 h-2 rounded-full ${u.face_confidence > 0.8 ? 'bg-green-500' : u.face_confidence > 0.6 ? 'bg-yellow-500' : 'bg-red-500'}`}></div>
+                      <span className="text-sm font-medium">{((u.face_confidence || 0) * 100).toFixed(1)}%</span>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4">
+                    <select 
+                      value={u.role} 
+                      onChange={(e) => handleUpdateRole(u.id, e.target.value, u.status)}
+                      className={`text-sm rounded-full px-3 py-1 font-medium border-none focus:ring-2 focus:ring-blue-500 cursor-pointer ${
+                        u.role === 'Super Admin' ? 'bg-purple-100 text-purple-700' : 
+                        u.role === 'admin' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700'
+                      }`}
+                      disabled={u.role === 'Super Admin'}
+                    >
+                      <option value="citizen">Citizen</option>
+                      <option value="admin">Admin</option>
+                      {u.role === 'Super Admin' && <option value="Super Admin">Super Admin</option>}
+                    </select>
+                  </td>
+                  <td className="px-6 py-4">
+                    <select 
+                      value={u.status || 'active'} 
+                      onChange={(e) => handleUpdateRole(u.id, u.role, e.target.value)}
+                      className={`text-sm rounded-full px-3 py-1 font-medium border-none outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer ${
+                        u.status === 'active' ? 'bg-green-100 text-green-700' : 
+                        u.status === 'suspended' ? 'bg-orange-100 text-orange-700' : 
+                        'bg-red-100 text-red-700'
+                      }`}
+                      disabled={u.role === 'Super Admin'}
+                    >
+                      <option value="active">Active</option>
+                      <option value="suspended">Suspended</option>
+                      <option value="blocked">Blocked</option>
+                    </select>
+                  </td>
+                  <td className="px-6 py-4 text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      <button 
+                        onClick={() => setSelectedUser(u)} 
+                        className="text-blue-600 hover:text-blue-800 text-sm font-medium px-3 py-1 rounded-lg hover:bg-blue-50 transition-colors"
+                      >
+                        View
+                      </button>
+                      <button 
+                        onClick={() => confirmDeleteUser(u)} 
+                        className="text-red-600 hover:text-red-800 text-sm font-medium px-3 py-1 rounded-lg hover:bg-red-50 transition-colors" 
+                        disabled={u.role === 'Super Admin'}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {filteredUsers.length === 0 && (
+            <div className="text-center py-12">
+              <p className="text-gray-500">No users found matching your search.</p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -2110,28 +2554,56 @@ function AdminAIAnalyzer() {
   const analyzeReport = async (report: any) => {
     setAnalyzing(report.id);
     try {
-      const prompt = `Analyze this city report and determine if it's a "correct" or "fault" (fake/incorrect) report. 
-      Report Title: ${report.title}
-      Category: ${report.category}
-      Description: ${report.description}
-      Location: ${report.location}
-      
-      If it's correct, recommend the necessary action (dispatch to police, rescue team, or sanitation/cleaner).
-      Provide the response in JSON format:
-      {
-        "is_correct": boolean,
-        "reasoning": "string",
-        "recommended_action": "police" | "rescue" | "cleaner" | "none",
-        "urgency": "low" | "medium" | "high",
-        "sms_message": "string (a short message to send to the team)"
-      }`;
+      const hasImage = !!(report.image_url);
+      const prompt = `You are an expert city infrastructure analyst. Analyze this citizen-submitted city issue report.
+
+Report Details:
+- Title: ${report.title}
+- Category: ${report.category}
+- Description: ${report.description}
+- Location: ${report.location}
+- Photo Provided: ${hasImage ? 'Yes' : 'No'}
+- Submitted by: ${report.user_name || report.user_email || 'Citizen'}
+
+${hasImage ? 'An image has been provided with this report. Please analyze the image content as context.' : ''}
+
+Determine if this report is legitimate and what action should be taken.
+
+Provide your response ONLY as valid JSON:
+{
+  "is_correct": boolean,
+  "reasoning": "detailed reason for your decision based on the report details",
+  "recommended_action": "police" | "rescue" | "cleaner" | "none",
+  "urgency": "low" | "medium" | "high",
+  "sms_message": "short dispatch message for the response team"
+}`;
 
       const requestBody: any = { prompt };
-      
-      if (report.image_url && report.image_url.startsWith('data:')) {
-        const base64Data = report.image_url.split(',')[1];
-        const mimeType = report.image_url.split(';')[0].split(':')[1];
-        requestBody.images = [{ data: base64Data, mimeType }];
+
+      // Send photo to AI - supports both base64 and HTTP URLs (convert HTTP to fetched base64)
+      if (report.image_url) {
+        if (report.image_url.startsWith('data:')) {
+          // Already base64
+          const base64Data = report.image_url.split(',')[1];
+          const mimeType = report.image_url.split(';')[0].split(':')[1] || 'image/jpeg';
+          requestBody.images = [{ data: base64Data, mimeType }];
+        } else if (report.image_url.startsWith('http')) {
+          // HTTP URL from Firebase Storage — fetch and convert to base64 for AI
+          try {
+            const imgRes = await fetch(report.image_url);
+            const blob = await imgRes.blob();
+            const base64 = await new Promise<string>((resolve) => {
+              const reader = new FileReader();
+              reader.onloadend = () => resolve(reader.result as string);
+              reader.readAsDataURL(blob);
+            });
+            const base64Data = base64.split(',')[1];
+            const mimeType = blob.type || 'image/jpeg';
+            requestBody.images = [{ data: base64Data, mimeType }];
+          } catch (fetchErr) {
+            console.warn('Could not fetch image for AI analysis, proceeding without image:', fetchErr);
+          }
+        }
       }
 
       const response = await request('/api/gemini/generate', {
@@ -2139,16 +2611,24 @@ function AdminAIAnalyzer() {
         body: JSON.stringify(requestBody)
       });
 
-      const analysis = JSON.parse(response.response || '{}');
+      let analysis: any = {};
+      try {
+        const cleanJson = (response.response || '{}').replace(/```json|```/g, '').trim();
+        analysis = JSON.parse(cleanJson);
+      } catch (parseErr) {
+        analysis = { is_correct: true, reasoning: response.response || 'Analysis complete', recommended_action: 'none', urgency: 'low' };
+      }
+
       setResults(prev => ({ ...prev, [report.id]: analysis }));
-      
+
       // Save analysis to database
       await request(`/api/admin/reports/${report.id}/analyze`, {
         method: 'POST',
-        body: JSON.stringify({ analysis: response.response })
+        body: JSON.stringify({ analysis: JSON.stringify(analysis) })
       });
-    } catch (err) {
+    } catch (err: any) {
       console.error('AI Analysis failed:', err);
+      alert('AI Analysis failed: ' + (err.message || 'Unknown error'));
     } finally {
       setAnalyzing(null);
     }
@@ -2159,44 +2639,34 @@ function AdminAIAnalyzer() {
     if (!analysis) return;
 
     try {
+      // Move to pending_manual so it appears in Manual Review tab
+      await request(`/api/admin/reports/${report.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ 
+          status: 'pending_manual',
+          admin_notes: `AI Analysis: ${analysis.reasoning}. Recommended: ${analysis.is_correct ? 'APPROVE' : 'REJECT'} (${analysis.recommended_action})`,
+          ai_analysis: JSON.stringify(analysis)
+        })
+      });
+      
+      // Remove from AI queue if needed
       if (activeSubTab === 'queue') {
-        const response = await request(`/api/admin/report-queue/${report.id}/process`, {
-          method: 'POST',
-          body: JSON.stringify({ 
-            analysis, 
-            isApproved: analysis.is_correct 
-          })
-        });
-        if (response.success) fetchData();
-      } else {
-        // Legacy/Direct Action
-        if (analysis.is_correct) {
-          await request(`/api/admin/reports/${report.id}`, {
-            method: 'PUT',
-            body: JSON.stringify({ 
-              status: 'approved',
-              admin_notes: `AI Analysis: ${analysis.reasoning}`
-            })
-          });
-          await request(`/api/admin/reports/${report.id}/initiate`, {
+        try {
+          await request(`/api/admin/report-queue/${report.id}/process`, {
             method: 'POST',
-            body: JSON.stringify({ 
-              notes: `AI Dispatched: ${analysis.recommended_action}. SMS: ${analysis.sms_message}`
-            })
+            body: JSON.stringify({ analysis, isApproved: false })
           });
-        } else {
-          await request(`/api/admin/reports/${report.id}`, {
-            method: 'PUT',
-            body: JSON.stringify({ 
-              status: 'rejected',
-              admin_notes: `AI Analysis (Fault): ${analysis.reasoning}`
-            })
-          });
+        } catch (queueErr) {
+          // Queue removal is non-critical
+          console.warn('Queue removal skipped:', queueErr);
         }
-        fetchData();
       }
+
+      alert(`✅ Report sent to Manual Review queue!\n\nAI Recommendation: ${analysis.is_correct ? 'APPROVE ✓' : 'REJECT ✗'}\n\nReasoning: ${analysis.reasoning}\n\nAdmin can now review the full report with photo in Manual Review section.`);
+      fetchData();
     } catch (err) {
-      console.error('Failed to take action:', err);
+      console.error('Failed to process report:', err);
+      alert('Failed to send to manual review. Please try again.');
     }
   };
 
@@ -2292,9 +2762,9 @@ function AdminAIAnalyzer() {
                       <p className="text-xs text-gray-600 mb-3">{results[report.id].reasoning}</p>
                       <button 
                         onClick={() => takeAction(report)}
-                        className={`w-full py-2 rounded-lg font-bold transition-colors ${results[report.id].is_correct ? 'bg-green-600 text-white hover:bg-green-700' : 'bg-red-600 text-white hover:bg-red-700'}`}
+                        className="w-full py-2 rounded-lg font-bold transition-colors bg-blue-600 text-white hover:bg-blue-700"
                       >
-                        {results[report.id].is_correct ? 'Approve & Move' : 'Reject & Move to Faults'}
+                        Send to Manual Review
                       </button>
                     </div>
                   )}
@@ -2320,6 +2790,18 @@ function AdminAIAnalyzer() {
                   </div>
                   <h3 className="text-xl font-bold mb-2">{report.title}</h3>
                   <p className="text-gray-600 mb-4">{report.description}</p>
+                  {report.image_url && (report.image_url.startsWith('http') || report.image_url.startsWith('data:')) && (
+                    <div className="mb-4">
+                      <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Report Photo</p>
+                      <img 
+                        src={report.image_url} 
+                        alt="Report" 
+                        className="w-full max-h-48 object-cover rounded-2xl border border-gray-100 cursor-pointer hover:opacity-90 transition-opacity"
+                        onClick={() => window.open(report.image_url, '_blank')}
+                        referrerPolicy="no-referrer" 
+                      />
+                    </div>
+                  )}
                   <p className="text-sm text-red-800 bg-red-50 p-3 rounded-xl border border-red-100 mb-4">
                     <strong>AI Reasoning:</strong> {typeof report.ai_analysis === 'string' ? report.ai_analysis : JSON.parse(JSON.stringify(report.ai_analysis)).reasoning}
                   </p>
@@ -2356,6 +2838,18 @@ function AdminAIAnalyzer() {
                   <div className="flex items-center gap-2 text-gray-400 text-sm">
                     <MapPin size={16} /> {report.location}
                   </div>
+                  {report.image_url && (report.image_url.startsWith('http') || report.image_url.startsWith('data:')) && (
+                    <div className="mt-4">
+                      <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Report Photo</p>
+                      <img 
+                        src={report.image_url} 
+                        alt="Report" 
+                        className="w-full max-h-48 object-cover rounded-2xl border border-gray-100 cursor-pointer hover:opacity-90 transition-opacity"
+                        onClick={() => window.open(report.image_url, '_blank')}
+                        referrerPolicy="no-referrer" 
+                      />
+                    </div>
+                  )}
                 </div>
                 <div className="w-full md:w-80 flex flex-col gap-4 border-l border-gray-100 pl-0 md:pl-6">
                   {!results[report.id] ? (
@@ -2378,9 +2872,9 @@ function AdminAIAnalyzer() {
                       <p className="text-xs text-gray-600 mb-3">{results[report.id].reasoning}</p>
                       <button 
                         onClick={() => takeAction(report)}
-                        className={`w-full py-2 rounded-lg font-bold transition-colors ${results[report.id].is_correct ? 'bg-green-600 text-white hover:bg-green-700' : 'bg-red-600 text-white hover:bg-red-700'}`}
+                        className="w-full py-2 rounded-lg font-bold transition-colors bg-blue-600 text-white hover:bg-blue-700"
                       >
-                        {results[report.id].is_correct ? 'Initiate Action' : 'Reject Report'}
+                        Send to Manual Review
                       </button>
                     </div>
                   )}
@@ -2474,6 +2968,430 @@ function AdminAIAnalyzer() {
           )
         )}
       </div>
+    </div>
+  );
+}
+
+// ============================================================
+// ADMIN MANUAL REPORTS - Full review panel with photo + approve/reject
+// ============================================================
+function AdminManualReports() {
+  const [reports, setReports] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedReport, setSelectedReport] = useState<any>(null);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [adminNotes, setAdminNotes] = useState('');
+  const [filter, setFilter] = useState<'all' | 'pending' | 'pending_manual'>('all');
+  const [imageModal, setImageModal] = useState<string | null>(null);
+
+  const toDate = (val: any): Date | null => {
+    if (!val) return null;
+    if (val instanceof Date) return val;
+    if (typeof val === 'string') return new Date(val);
+    if (val._seconds) return new Date(val._seconds * 1000);
+    if (val.seconds) return new Date(val.seconds * 1000);
+    if (typeof val.toDate === 'function') return val.toDate();
+    return null;
+  };
+
+  const fetchReports = async () => {
+    setLoading(true);
+    try {
+      const data = await request('/api/admin/manual-reports');
+      setReports(data);
+    } catch (err: any) {
+      console.error('Failed to fetch manual reports:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchReports(); }, []);
+
+  const handleApprove = async (report: any) => {
+    setActionLoading(report.id + '_approve');
+    try {
+      await request(`/api/admin/manual-reports/${report.id}/approve`, {
+        method: 'POST',
+        body: JSON.stringify({ admin_notes: adminNotes || `Approved by administrator on ${new Date().toLocaleString()}` })
+      });
+      setSelectedReport(null);
+      setAdminNotes('');
+      await fetchReports();
+    } catch (err: any) {
+      alert('Failed to approve: ' + err.message);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleReject = async (report: any) => {
+    setActionLoading(report.id + '_reject');
+    try {
+      await request(`/api/admin/manual-reports/${report.id}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({ admin_notes: adminNotes || `Rejected by administrator on ${new Date().toLocaleString()}` })
+      });
+      setSelectedReport(null);
+      setAdminNotes('');
+      await fetchReports();
+    } catch (err: any) {
+      alert('Failed to reject: ' + err.message);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const getUrgencyColor = (urgency: string) => {
+    if (urgency === 'high') return 'bg-red-100 text-red-700 border-red-200';
+    if (urgency === 'medium') return 'bg-orange-100 text-orange-700 border-orange-200';
+    return 'bg-green-100 text-green-700 border-green-200';
+  };
+
+  const filteredReports = filter === 'all' ? reports : reports.filter(r => r.status === filter);
+
+  return (
+    <div className="space-y-6 max-w-7xl mx-auto">
+      {/* Header */}
+      <div className="bg-gradient-to-r from-orange-600 to-red-600 rounded-3xl p-8 text-white shadow-xl">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+          <div>
+            <h2 className="text-3xl font-bold mb-2 flex items-center gap-3">
+              <ShieldCheck size={32} /> Manual Review Queue
+            </h2>
+            <p className="text-orange-100 max-w-md">
+              Reports processed by AI awaiting your manual decision. View the photo, read the AI analysis, then Approve or Reject.
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="bg-white/20 rounded-2xl px-5 py-3 text-center">
+              <p className="text-3xl font-bold">{reports.length}</p>
+              <p className="text-sm text-orange-100">Pending Reports</p>
+            </div>
+            <button onClick={fetchReports} className="bg-white text-orange-600 p-3 rounded-xl hover:bg-orange-50 transition-colors">
+              <RefreshCw size={20} />
+            </button>
+          </div>
+        </div>
+        {/* Filter pills */}
+        <div className="flex gap-2 mt-6">
+          {(['all', 'pending', 'pending_manual'] as const).map(f => (
+            <button key={f} onClick={() => setFilter(f)}
+              className={`px-4 py-1.5 rounded-full text-sm font-bold transition-all ${filter === f ? 'bg-white text-orange-600' : 'bg-white/20 text-white hover:bg-white/30'}`}>
+              {f === 'all' ? 'All' : f === 'pending' ? 'New (Pending)' : 'AI Reviewed'}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Image Lightbox Modal */}
+      {imageModal && (
+        <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-6" onClick={() => setImageModal(null)}>
+          <button className="absolute top-6 right-6 text-white bg-white/20 rounded-full p-2 hover:bg-white/30" onClick={() => setImageModal(null)}>
+            <X size={28} />
+          </button>
+          <img src={imageModal} alt="Report Photo" className="max-w-full max-h-[90vh] object-contain rounded-2xl shadow-2xl" referrerPolicy="no-referrer" onClick={e => e.stopPropagation()} />
+        </div>
+      )}
+
+      {/* Report Detail Modal */}
+      {selectedReport && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl w-full max-w-3xl max-h-[95vh] overflow-y-auto shadow-2xl">
+            {/* Modal Header */}
+            <div className="sticky top-0 bg-white border-b border-gray-100 px-8 py-5 flex justify-between items-center z-10 rounded-t-3xl">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900">Report Review</h3>
+                <p className="text-sm text-gray-500 font-mono">ID: {selectedReport.id}</p>
+              </div>
+              <button onClick={() => { setSelectedReport(null); setAdminNotes(''); }} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                <X size={24} className="text-gray-500" />
+              </button>
+            </div>
+
+            <div className="p-8 space-y-6">
+              {/* Report Photo - ALWAYS SHOWN PROMINENTLY */}
+              <div className="space-y-3">
+                <h4 className="text-xs font-bold uppercase tracking-widest text-gray-400">Report Photo</h4>
+                {selectedReport.image_url ? (
+                  <div className="relative group">
+                    <img
+                      src={selectedReport.image_url}
+                      alt="Report Photo"
+                      className="w-full max-h-72 object-cover rounded-2xl border-2 border-gray-100 cursor-zoom-in hover:opacity-95 transition-opacity shadow-sm"
+                      referrerPolicy="no-referrer"
+                      onClick={() => setImageModal(selectedReport.image_url)}
+                    />
+                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="bg-black/60 text-white px-4 py-2 rounded-xl font-medium text-sm backdrop-blur-sm">
+                        Click to enlarge
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => window.open(selectedReport.image_url, '_blank')}
+                      className="absolute top-3 right-3 bg-black/60 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-black/80 transition-colors backdrop-blur-sm"
+                    >
+                      Open Full Size ↗
+                    </button>
+                  </div>
+                ) : (
+                  <div className="w-full h-40 bg-gray-50 rounded-2xl border-2 border-dashed border-gray-200 flex items-center justify-center">
+                    <div className="text-center text-gray-400">
+                      <Camera size={32} className="mx-auto mb-2 opacity-40" />
+                      <p className="text-sm">No photo attached to this report</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Report Info */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-gray-50 rounded-2xl p-4">
+                  <p className="text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Category</p>
+                  <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-bold">{selectedReport.category}</span>
+                </div>
+                <div className="bg-gray-50 rounded-2xl p-4">
+                  <p className="text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Status</p>
+                  <span className={`px-3 py-1 rounded-full text-sm font-bold ${selectedReport.status === 'pending_manual' ? 'bg-orange-100 text-orange-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                    {selectedReport.status === 'pending_manual' ? '🤖 AI Reviewed' : '🆕 New Report'}
+                  </span>
+                </div>
+                <div className="bg-gray-50 rounded-2xl p-4 col-span-2">
+                  <p className="text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Submitted By</p>
+                  <div className="flex items-center gap-3">
+                    {selectedReport.user_photo ? (
+                      <img src={selectedReport.user_photo} alt="" className="w-8 h-8 rounded-full object-cover border border-gray-200" referrerPolicy="no-referrer"/>
+                    ) : (
+                      <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-sm">
+                        {(selectedReport.user_name || 'U').charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    <div>
+                      <p className="font-semibold text-gray-900">{selectedReport.user_name || 'Anonymous'}</p>
+                      <p className="text-xs text-gray-400">{selectedReport.user_email}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Title & Description */}
+              <div className="space-y-3">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Title</p>
+                  <p className="text-xl font-bold text-gray-900">{selectedReport.title}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Description</p>
+                  <p className="text-gray-700 leading-relaxed bg-gray-50 p-4 rounded-xl">{selectedReport.description}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Location</p>
+                  <div className="flex items-center gap-2 text-gray-700">
+                    <MapPin size={16} className="text-blue-500 shrink-0" />
+                    <p className="text-sm">{selectedReport.location}</p>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wider text-gray-400 mb-1">Submitted</p>
+                  <p className="text-gray-700">{(() => { const d = toDate(selectedReport.created_at || selectedReport.createdAt); return d ? d.toLocaleString() : '—'; })()}</p>
+                </div>
+              </div>
+
+              {/* AI Analysis Panel */}
+              {selectedReport.ai_analysis && (
+                <div className="bg-gradient-to-br from-purple-50 to-blue-50 rounded-2xl p-6 border border-purple-100">
+                  <h4 className="font-bold text-purple-900 mb-4 flex items-center gap-2">
+                    <Brain size={20} className="text-purple-600" /> AI Analysis Results
+                  </h4>
+                  {(() => {
+                    try {
+                      const ai = typeof selectedReport.ai_analysis === 'string'
+                        ? JSON.parse(selectedReport.ai_analysis)
+                        : selectedReport.ai_analysis;
+                      return (
+                        <div className="space-y-3">
+                          <div className="flex items-center gap-3">
+                            <span className={`px-3 py-1.5 rounded-full text-sm font-bold border ${ai.is_correct ? 'bg-green-100 text-green-800 border-green-200' : 'bg-red-100 text-red-800 border-red-200'}`}>
+                              {ai.is_correct ? '✅ AI Recommends: APPROVE' : '❌ AI Recommends: REJECT'}
+                            </span>
+                            {ai.urgency && (
+                              <span className={`px-3 py-1.5 rounded-full text-xs font-bold border ${getUrgencyColor(ai.urgency)}`}>
+                                {ai.urgency?.toUpperCase()} urgency
+                              </span>
+                            )}
+                          </div>
+                          {ai.reasoning && <p className="text-sm text-gray-700 leading-relaxed"><strong>Reasoning:</strong> {ai.reasoning}</p>}
+                          {ai.recommended_action && ai.recommended_action !== 'none' && (
+                            <p className="text-sm text-gray-700"><strong>Dispatch:</strong> {ai.recommended_action}</p>
+                          )}
+                          {ai.sms_message && (
+                            <div className="bg-white rounded-xl p-3 border border-purple-100">
+                              <p className="text-xs text-gray-400 font-bold uppercase mb-1">Suggested Dispatch Message</p>
+                              <p className="text-sm text-gray-700 italic">"{ai.sms_message}"</p>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    } catch {
+                      return <p className="text-sm text-gray-600">{String(selectedReport.ai_analysis)}</p>;
+                    }
+                  })()}
+                </div>
+              )}
+
+              {selectedReport.admin_notes && (
+                <div className="bg-yellow-50 rounded-2xl p-4 border border-yellow-100">
+                  <p className="text-xs font-bold uppercase tracking-wider text-yellow-600 mb-1">Previous Admin Notes</p>
+                  <p className="text-sm text-yellow-800">{selectedReport.admin_notes}</p>
+                </div>
+              )}
+
+              {/* Admin Decision */}
+              <div className="border-t border-gray-100 pt-6">
+                <h4 className="font-bold text-gray-800 mb-3">Your Decision & Notes</h4>
+                <textarea
+                  value={adminNotes}
+                  onChange={e => setAdminNotes(e.target.value)}
+                  placeholder="Add notes for this decision (optional)..."
+                  className="w-full border border-gray-200 rounded-xl p-4 text-sm focus:ring-2 focus:ring-blue-500 outline-none resize-none h-24 bg-gray-50"
+                />
+                <div className="flex gap-3 mt-4">
+                  <button
+                    onClick={() => handleApprove(selectedReport)}
+                    disabled={!!actionLoading}
+                    className="flex-1 bg-green-600 hover:bg-green-700 text-white py-4 rounded-2xl font-bold text-lg transition-all flex items-center justify-center gap-3 disabled:opacity-60 shadow-lg shadow-green-500/20"
+                  >
+                    {actionLoading === selectedReport.id + '_approve' ? <Loader2 className="animate-spin" size={22} /> : <CheckCircle size={22} />}
+                    Approve Report
+                  </button>
+                  <button
+                    onClick={() => handleReject(selectedReport)}
+                    disabled={!!actionLoading}
+                    className="flex-1 bg-red-600 hover:bg-red-700 text-white py-4 rounded-2xl font-bold text-lg transition-all flex items-center justify-center gap-3 disabled:opacity-60 shadow-lg shadow-red-500/20"
+                  >
+                    {actionLoading === selectedReport.id + '_reject' ? <Loader2 className="animate-spin" size={22} /> : <X size={22} />}
+                    Reject Report
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reports List */}
+      {loading ? (
+        <div className="flex justify-center py-20"><Loader2 className="animate-spin text-orange-500" size={48} /></div>
+      ) : filteredReports.length === 0 ? (
+        <div className="text-center py-24 bg-white rounded-3xl border border-dashed border-gray-200">
+          <ShieldCheck size={64} className="mx-auto mb-4 text-green-400 opacity-40" />
+          <h3 className="text-2xl font-bold text-gray-700 mb-2">All Clear!</h3>
+          <p className="text-gray-400">No reports pending manual review at this time.</p>
+          <button onClick={fetchReports} className="mt-6 px-6 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-medium transition-colors flex items-center gap-2 mx-auto">
+            <RefreshCw size={16} /> Refresh
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4">
+          {filteredReports.map((report) => {
+            const rDate = toDate(report.created_at || report.createdAt);
+            let aiRec: any = null;
+            if (report.ai_analysis) {
+              try { aiRec = typeof report.ai_analysis === 'string' ? JSON.parse(report.ai_analysis) : report.ai_analysis; } catch {}
+            }
+            return (
+              <div key={report.id} className="bg-white rounded-3xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow overflow-hidden">
+                <div className="flex flex-col md:flex-row">
+                  {/* Photo thumbnail */}
+                  <div className="w-full md:w-48 shrink-0 h-48 md:h-auto bg-gray-100 relative overflow-hidden">
+                    {report.image_url ? (
+                      <img
+                        src={report.image_url}
+                        alt="Report"
+                        className="w-full h-full object-cover cursor-pointer hover:opacity-90 transition-opacity"
+                        referrerPolicy="no-referrer"
+                        onClick={() => setImageModal(report.image_url)}
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center bg-gray-50">
+                        <Camera size={32} className="text-gray-300" />
+                      </div>
+                    )}
+                    <div className={`absolute top-2 left-2 px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${report.status === 'pending_manual' ? 'bg-orange-500 text-white' : 'bg-yellow-500 text-white'}`}>
+                      {report.status === 'pending_manual' ? '🤖 AI Done' : '🆕 New'}
+                    </div>
+                  </div>
+
+                  {/* Report Content */}
+                  <div className="flex-1 p-6">
+                    <div className="flex justify-between items-start gap-4 flex-wrap mb-3">
+                      <div>
+                        <div className="flex items-center gap-2 mb-2 flex-wrap">
+                          <span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-bold">{report.category}</span>
+                          {aiRec && (
+                            <span className={`px-3 py-1 rounded-full text-xs font-bold border ${aiRec.is_correct ? 'bg-green-100 text-green-700 border-green-200' : 'bg-red-100 text-red-700 border-red-200'}`}>
+                              AI: {aiRec.is_correct ? '✅ Approve' : '❌ Reject'}
+                            </span>
+                          )}
+                          {aiRec?.urgency && (
+                            <span className={`px-3 py-1 rounded-full text-xs font-bold border ${getUrgencyColor(aiRec.urgency)}`}>
+                              {aiRec.urgency.toUpperCase()}
+                            </span>
+                          )}
+                        </div>
+                        <h3 className="text-lg font-bold text-gray-900 mb-1">{report.title}</h3>
+                        <p className="text-gray-500 text-sm line-clamp-2 max-w-lg">{report.description}</p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-xs text-gray-400">{rDate ? rDate.toLocaleDateString() : '—'}</p>
+                        <p className="text-xs text-gray-400">{rDate ? rDate.toLocaleTimeString() : ''}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 text-gray-400 text-sm mb-4">
+                      <MapPin size={14} className="shrink-0" />
+                      <span className="truncate max-w-sm">{report.location}</span>
+                    </div>
+
+                    {aiRec?.reasoning && (
+                      <div className="bg-purple-50 rounded-xl p-3 mb-4 border border-purple-100">
+                        <p className="text-xs text-purple-600 font-bold mb-1">AI REASONING</p>
+                        <p className="text-xs text-purple-800 line-clamp-2">{aiRec.reasoning}</p>
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs text-gray-400">By: <strong>{report.user_name || report.user_email || 'Unknown'}</strong></span>
+                      <div className="flex gap-2 ml-auto">
+                        <button
+                          onClick={() => { setSelectedReport(report); setAdminNotes(''); }}
+                          className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-sm transition-colors flex items-center gap-2 shadow-sm shadow-blue-500/20"
+                        >
+                          <FileText size={16} /> View & Decide
+                        </button>
+                        <button
+                          onClick={() => handleApprove(report)}
+                          disabled={!!actionLoading}
+                          className="px-4 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-xl font-bold text-sm transition-colors disabled:opacity-50"
+                        >
+                          ✓ Approve
+                        </button>
+                        <button
+                          onClick={() => handleReject(report)}
+                          disabled={!!actionLoading}
+                          className="px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold text-sm transition-colors disabled:opacity-50"
+                        >
+                          ✗ Reject
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -2622,8 +3540,31 @@ function AdminReports() {
                     <Brain className="text-blue-600" size={20} />
                     <h4 className="font-bold text-blue-900">AI Analysis</h4>
                   </div>
-                  <div className="text-sm text-blue-800 prose prose-blue max-w-none">
-                    <ReactMarkdown>{JSON.parse(selectedReport.ai_analysis).summary || selectedReport.ai_analysis}</ReactMarkdown>
+                  <div className="text-sm text-blue-800">
+                    {(() => {
+                      try {
+                        const analysis = JSON.parse(selectedReport.ai_analysis);
+                        return (
+                          <div className="space-y-2">
+                            {analysis.is_correct !== undefined && (
+                              <div className="flex items-center gap-2">
+                                <span className={`px-2 py-1 rounded text-xs font-bold ${analysis.is_correct ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                  {analysis.is_correct ? 'AI Recommends: APPROVE' : 'AI Recommends: REJECT'}
+                                </span>
+                                <span className="text-xs text-gray-500">Confidence: {Math.round((analysis.confidence || 0) * 100)}%</span>
+                              </div>
+                            )}
+                            {analysis.reasoning && <p><strong>Reasoning:</strong> {analysis.reasoning}</p>}
+                            {analysis.recommended_action && analysis.recommended_action !== 'none' && (
+                              <p><strong>Recommended Action:</strong> {analysis.recommended_action}</p>
+                            )}
+                            {analysis.urgency && <p><strong>Urgency:</strong> {analysis.urgency}</p>}
+                          </div>
+                        );
+                      } catch (e) {
+                        return <p>{selectedReport.ai_analysis}</p>;
+                      }
+                    })()}
                   </div>
                 </div>
               )}
@@ -2838,12 +3779,12 @@ function Profile({ user, setUser }: { user: User, setUser: (user: User | null) =
     setLoading(true);
     setError('');
     try {
-      const data = await request('/api/auth/delete-account', {
+      await request('/api/auth/delete-account', {
         method: 'POST',
         body: JSON.stringify({ password: deletePassword })
       });
       setShowDeleteModal(false);
-      setMessage(`Account scheduled for deletion on ${new Date(data.scheduledDate).toLocaleDateString()}. You will be logged out.`);
+      setMessage(`Account permanently deleted. You will be logged out now.`);
       setTimeout(() => {
         localStorage.removeItem('token');
         setUser(null);
