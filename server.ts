@@ -331,13 +331,13 @@ const verifyIdentity = async (nidPhoto: string, selfiePhoto: string, profilePhot
 };
 
 const uploadBase64ToStorage = async (base64Data: string, path: string): Promise<string | null> => {
-  if (!base64Data || !base64Data.includes('base64,')) return null;
-  if (!db_firebase) return null;
+  if (!base64Data || !base64Data.includes('base64,')) return base64Data || null;
+  if (!db_firebase) return base64Data;
 
   try {
     const bucket = admin.storage().bucket();
     const matches = base64Data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-    if (!matches || matches.length !== 3) return null;
+    if (!matches || matches.length !== 3) return base64Data;
 
     const contentType = matches[1];
     const buffer = Buffer.from(matches[2], 'base64');
@@ -360,7 +360,8 @@ const uploadBase64ToStorage = async (base64Data: string, path: string): Promise<
     }
   } catch (err: any) {
     console.error('❌ Storage Upload Error:', err.message);
-    return null;
+    // CRITICAL: Always fallback to original base64 to prevent rendering blank UI
+    return base64Data; 
   }
 };
 

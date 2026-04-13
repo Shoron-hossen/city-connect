@@ -8,7 +8,6 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import RemarkableDatesWidget from './RemarkableDatesWidget';
 import TransportationPage from './TransportationPage';
 import EnvironmentPage from './EnvironmentPage';
-import DisasterAlertPage from './DisasterAlertPage';
 
 // --- Types ---
 export interface User {
@@ -103,7 +102,6 @@ export default function App() {
           <Route path="/admin/*" element={<AdminRoute user={user}><AdminDashboard user={user!} setUser={setUser} /></AdminRoute>} />
           <Route path="/report" element={<ProtectedRoute user={user}><ReportIssue user={user!} setUser={setUser} /></ProtectedRoute>} />
           <Route path="/transportation" element={<ProtectedRoute user={user}><TransportationPage user={user!} setUser={setUser} /></ProtectedRoute>} />
-          <Route path="/disaster-alert" element={<ProtectedRoute user={user}><DisasterAlertPage user={user!} setUser={setUser} /></ProtectedRoute>} />
           <Route path="/success" element={<ProtectedRoute user={user}><Success /></ProtectedRoute>} />
           </Routes>
           <FloatingAIAssistant />
@@ -147,7 +145,7 @@ function AdminRoute({ user, children }: { user: User | null, children: React.Rea
 export function Navbar({ user, setUser }: { user: User | null, setUser: (user: User | null) => void }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const isDashboard = location.pathname.startsWith('/dashboard') || location.pathname.startsWith('/profile') || location.pathname.startsWith('/ai-chat') || location.pathname.startsWith('/sos') || location.pathname.startsWith('/my-reports') || location.pathname.startsWith('/transportation') || location.pathname.startsWith('/disaster-alert');
+  const isDashboard = location.pathname.startsWith('/dashboard') || location.pathname.startsWith('/profile') || location.pathname.startsWith('/ai-chat') || location.pathname.startsWith('/sos') || location.pathname.startsWith('/my-reports') || location.pathname.startsWith('/transportation');
 
   const handleLogout = () => {
     localStorage.removeItem('token');
@@ -168,9 +166,6 @@ export function Navbar({ user, setUser }: { user: User | null, setUser: (user: U
           <>
             <Link to="/transportation" className={`flex items-center gap-2 transition-colors font-medium ${location.pathname === '/transportation' ? 'text-indigo-400 border-b-2 border-indigo-400 pb-1' : 'text-gray-300 hover:text-indigo-400'}`}>
               <Car size={18} className={location.pathname === '/transportation' ? 'text-indigo-300' : 'text-indigo-400'} /> Transport
-            </Link>
-            <Link to="/disaster-alert" className={`flex items-center gap-2 transition-colors font-medium ${location.pathname === '/disaster-alert' ? 'text-orange-400 border-b-2 border-orange-400 pb-1' : 'text-gray-300 hover:text-orange-400'}`}>
-              <BellRing size={18} className={location.pathname === '/disaster-alert' ? 'text-orange-300' : 'text-orange-400'} /> Disaster Alert
             </Link>
             <Link to="/ai-chat" className={`flex items-center gap-2 transition-colors font-medium ${location.pathname === '/ai-chat' ? 'text-purple-400 border-b-2 border-purple-400 pb-1' : 'text-gray-300 hover:text-purple-400'}`}>
               <Brain size={18} className="text-purple-400" /> AI Chat
@@ -194,8 +189,8 @@ export function Navbar({ user, setUser }: { user: User | null, setUser: (user: U
           <div className="flex items-center gap-6">
             <div className="relative group">
               <button className="flex items-center gap-2 hover:text-blue-300 transition-colors py-2">
-                {user.photo_url ? (
-                  <img src={user.photo_url} alt="Profile" className="w-8 h-8 rounded-full border border-white/20 object-cover" referrerPolicy="no-referrer" />
+                {(user.photo_url || user.profile_photo_url) ? (
+                  <img src={(user.photo_url || user.profile_photo_url) as string} alt="Profile" className="w-8 h-8 rounded-full border border-white/20 object-cover" referrerPolicy="no-referrer" />
                 ) : (
                   <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center border border-white/20">
                     <UserIcon size={16} />
@@ -504,7 +499,8 @@ function SignUp({ setUser }: { setUser: (user: User) => void }) {
           const canvas = document.createElement('canvas');
           let width = img.width;
           let height = img.height;
-          const MAX_SIZE = 800;
+          // Max dimension 1600px to ensure full high quality image details while keeping size ~500kb
+          const MAX_SIZE = 1600;
           if (width > height) {
             if (width > MAX_SIZE) {
               height *= MAX_SIZE / width;
@@ -521,7 +517,8 @@ function SignUp({ setUser }: { setUser: (user: User) => void }) {
           const ctx = canvas.getContext('2d');
           if (ctx) {
             ctx.drawImage(img, 0, 0, width, height);
-            setter(canvas.toDataURL('image/jpeg', 0.6));
+            // highly quality JPEG (0.85) to retain text details without crashing
+            setter(canvas.toDataURL('image/jpeg', 0.85));
           } else {
             setter(reader.result as string);
           }
@@ -650,7 +647,7 @@ function SignUp({ setUser }: { setUser: (user: User) => void }) {
                   <label className="block text-xs font-bold tracking-widest mb-3 uppercase text-gray-400">Upload Document Photo</label>
                   <div className="relative group">
                     <input type="file" accept="image/*" onChange={(e) => handlePhotoUpload(e, setPhoto)} className="hidden" id="doc-photo" />
-                    <label htmlFor="doc-photo" className="w-full h-40 bg-white/5 border-2 border-dashed border-white/10 rounded-3xl flex flex-col items-center justify-center cursor-pointer hover:bg-white/10 hover:border-blue-500/50 transition-all overflow-hidden">
+                    <label htmlFor="doc-photo" className="w-full h-40 bg-white/5 border-2 border-dashed border-white/10 rounded-3xl flex flex-col items-center justify-center cursor-pointer hover:bg-white/10 hover:border-blue-500/50 transition-all overflow-hidden relative">
                       {photo ? (
                         <img src={photo} alt="Document" className="w-full h-full object-cover" />
                       ) : (
@@ -660,13 +657,25 @@ function SignUp({ setUser }: { setUser: (user: User) => void }) {
                         </>
                       )}
                     </label>
+                    {!photo && (
+                      <div className="absolute bottom-2 inset-x-2 flex gap-2 sm:hidden z-10 opacity-80 backdrop-blur-sm p-1 rounded-xl bg-black/40">
+                         <label className="flex-1 text-center py-2 bg-blue-500 rounded-lg text-xs font-bold text-white shadow-sm cursor-pointer border border-blue-400">
+                           <input type="file" accept="image/*" capture="environment" onChange={(e) => handlePhotoUpload(e, setPhoto)} className="hidden" />
+                           <Camera size={14} className="inline mr-1"/> Camera
+                         </label>
+                         <label className="flex-1 text-center py-2 bg-purple-500 rounded-lg text-xs font-bold text-white shadow-sm cursor-pointer border border-purple-400">
+                           <input type="file" accept="image/*" onChange={(e) => handlePhotoUpload(e, setPhoto)} className="hidden" />
+                           Gallery
+                         </label>
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div>
                   <label className="block text-xs font-bold tracking-widest mb-3 uppercase text-gray-400">Upload Clear Profile Photo</label>
                   <div className="relative group">
                     <input type="file" accept="image/*" onChange={(e) => handlePhotoUpload(e, setProfilePhoto)} className="hidden" id="profile-photo" />
-                    <label htmlFor="profile-photo" className="w-full h-40 bg-white/5 border-2 border-dashed border-white/10 rounded-3xl flex flex-col items-center justify-center cursor-pointer hover:bg-white/10 hover:border-blue-500/50 transition-all overflow-hidden">
+                    <label htmlFor="profile-photo" className="w-full h-40 bg-white/5 border-2 border-dashed border-white/10 rounded-3xl flex flex-col items-center justify-center cursor-pointer hover:bg-white/10 hover:border-blue-500/50 transition-all overflow-hidden relative">
                       {profilePhoto ? (
                         <img src={profilePhoto} alt="Profile" className="w-full h-full object-cover" />
                       ) : (
@@ -676,6 +685,18 @@ function SignUp({ setUser }: { setUser: (user: User) => void }) {
                         </>
                       )}
                     </label>
+                    {!profilePhoto && (
+                      <div className="absolute bottom-2 inset-x-2 flex gap-2 sm:hidden z-10 opacity-80 backdrop-blur-sm p-1 rounded-xl bg-black/40">
+                         <label className="flex-1 text-center py-2 bg-blue-500 rounded-lg text-xs font-bold text-white shadow-sm cursor-pointer border border-blue-400">
+                           <input type="file" accept="image/*" capture="user" onChange={(e) => handlePhotoUpload(e, setProfilePhoto)} className="hidden" />
+                           <Camera size={14} className="inline mr-1"/> Camera
+                         </label>
+                         <label className="flex-1 text-center py-2 bg-purple-500 rounded-lg text-xs font-bold text-white shadow-sm cursor-pointer border border-purple-400">
+                           <input type="file" accept="image/*" onChange={(e) => handlePhotoUpload(e, setProfilePhoto)} className="hidden" />
+                           Gallery
+                         </label>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1679,8 +1700,8 @@ function ReportIssue({ user, setUser }: { user: User, setUser: (user: User | nul
           let width = img.width;
           let height = img.height;
           
-          // Max dimension 800px to strictly limit the base64 size well below 1MB
-          const MAX_SIZE = 800;
+          // Max dimension 1600px to strictly limit the base64 size well below 1MB while preserving deep details
+          const MAX_SIZE = 1600;
           if (width > height) {
             if (width > MAX_SIZE) {
               height *= MAX_SIZE / width;
@@ -1698,8 +1719,8 @@ function ReportIssue({ user, setUser }: { user: User, setUser: (user: User | nul
           const ctx = canvas.getContext('2d');
           if (ctx) {
             ctx.drawImage(img, 0, 0, width, height);
-            // highly compressed JPEG (0.6 quality)
-            const compressedBase64 = canvas.toDataURL('image/jpeg', 0.6);
+            // highly compressed JPEG (0.85 quality) to ensure crisp texts and edges ~500kb
+            const compressedBase64 = canvas.toDataURL('image/jpeg', 0.85);
             setImage(compressedBase64);
           } else {
             // Fallback if canvas fails
@@ -1859,19 +1880,33 @@ Return a JSON object with exactly these keys:
         </button>
         <h1 className="text-4xl font-bold text-center mb-8 tracking-tight">Report an Issue</h1>
         
-        <input type="file" accept="image/*" ref={fileInputRef} onChange={handleImageUpload} className="hidden" />
-        
-        <div 
-          onClick={() => fileInputRef.current?.click()}
-          className="bg-white/5 border border-white/20 rounded-[2rem] aspect-[4/3] flex flex-col items-center justify-center gap-4 mb-8 cursor-pointer hover:bg-white/10 transition-colors overflow-hidden relative"
-        >
-          {image ? (
-            <img src={image} alt="Upload preview" className="w-full h-full object-cover" />
-          ) : (
-            <>
-              <Camera size={48} className="text-gray-300" />
-              <span className="text-gray-200 font-medium">Upload Image</span>
-            </>
+        <div className="relative group w-full mb-8">
+          <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" id="report-photo" />
+          <label 
+            htmlFor="report-photo" 
+            className="w-full bg-white/5 border border-white/20 rounded-[2rem] aspect-[4/3] flex flex-col items-center justify-center gap-4 cursor-pointer hover:bg-white/10 transition-all overflow-hidden relative"
+          >
+            {image ? (
+              <img src={image} alt="Upload preview" className="w-full h-full object-cover" />
+            ) : (
+              <>
+                <Camera size={48} className="text-gray-300 group-hover:text-blue-400 transition-colors" />
+                <span className="text-gray-200 font-medium group-hover:text-white transition-colors">Upload Image</span>
+              </>
+            )}
+          </label>
+          
+          {!image && (
+            <div className="absolute bottom-4 inset-x-4 flex gap-2 sm:hidden z-10 opacity-90 backdrop-blur-sm p-1.5 rounded-xl bg-black/40">
+               <label className="flex-1 text-center py-2.5 bg-blue-600 rounded-xl text-sm font-bold text-white shadow-sm cursor-pointer border border-blue-400/50 hover:bg-blue-500 active:scale-95 transition-all">
+                 <input type="file" accept="image/*" capture="environment" onChange={handleImageUpload} className="hidden" />
+                 <Camera size={16} className="inline mr-2"/>Camera
+               </label>
+               <label className="flex-1 text-center py-2.5 bg-purple-600 rounded-xl text-sm font-bold text-white shadow-sm cursor-pointer border border-purple-400/50 hover:bg-purple-500 active:scale-95 transition-all">
+                 <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
+                 Gallery
+               </label>
+            </div>
           )}
         </div>
         
@@ -3589,7 +3624,14 @@ function AdminReports() {
                   <div className="text-sm text-blue-800">
                     {(() => {
                       try {
-                        const analysis = JSON.parse(selectedReport.ai_analysis);
+                        const analysis = typeof selectedReport.ai_analysis === 'string' 
+                          ? JSON.parse(selectedReport.ai_analysis) 
+                          : selectedReport.ai_analysis;
+                          
+                        if (!analysis || typeof analysis !== 'object') {
+                          return <p className="font-mono bg-blue-100 p-3 rounded-xl">{String(selectedReport.ai_analysis)}</p>;
+                        }
+
                         return (
                           <div className="space-y-2">
                             {analysis.is_correct !== undefined && (
@@ -3608,7 +3650,11 @@ function AdminReports() {
                           </div>
                         );
                       } catch (e) {
-                        return <p>{selectedReport.ai_analysis}</p>;
+                         // Fallback for completely malformed analysis strings so React doesn't crash
+                         const safeString = typeof selectedReport.ai_analysis === 'object' 
+                           ? JSON.stringify(selectedReport.ai_analysis) 
+                           : String(selectedReport.ai_analysis);
+                         return <p className="font-mono whitespace-pre-wrap bg-blue-100/50 p-3 rounded-xl">{safeString}</p>;
                       }
                     })()}
                   </div>
@@ -3862,7 +3908,36 @@ function Profile({ user, setUser }: { user: User, setUser: (user: User | null) =
     if (file) {
       const reader = new FileReader();
       reader.onloadend = () => {
-        setProfilePhotoUrl(reader.result as string);
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+          // Maintain a 1080p-like resolution ceiling 
+          const MAX_SIZE = 1600;
+          if (width > height) {
+            if (width > MAX_SIZE) {
+              height *= MAX_SIZE / width;
+              width = MAX_SIZE;
+            }
+          } else {
+            if (height > MAX_SIZE) {
+              width *= MAX_SIZE / height;
+              height = MAX_SIZE;
+            }
+          }
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, width, height);
+            // highly quality JPEG (0.85) to retain details around 500kb max
+            setProfilePhotoUrl(canvas.toDataURL('image/jpeg', 0.85));
+          } else {
+            setProfilePhotoUrl(reader.result as string);
+          }
+        };
+        img.src = reader.result as string;
       };
       reader.readAsDataURL(file);
     }
