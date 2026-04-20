@@ -15,7 +15,7 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import { Groq } from 'groq-sdk';
-import { startDisasterAlertService } from './disasterService';
+import { startDisasterAlertService } from './disasterService.js';
 // SQLite removed for Vercel deployment
 
 const app = express();
@@ -136,21 +136,27 @@ try {
     }
 
     const calculatedBucket = process.env.VITE_FIREBASE_STORAGE_BUCKET || `${serviceAccount.project_id}.firebasestorage.app`;
-    const app = admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-      storageBucket: calculatedBucket
-    });
+    
+    let fbApp;
+    if (admin.apps.length === 0) {
+      fbApp = admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+        storageBucket: calculatedBucket
+      });
+    } else {
+      fbApp = admin.app();
+    }
 
     const databaseId = process.env.FIREBASE_DATABASE_ID;
     const storageBucket = calculatedBucket;
       
       if (databaseId && databaseId !== '(default)' && databaseId.trim() !== '') {
-        const fs = getFirestore(app);
+        const fs = getFirestore(fbApp);
         fs.settings({ databaseId, ignoreUndefinedProperties: true });
         db_firebase = fs;
         console.log(`✅ Firebase initialized successfully (Database: ${databaseId}, Storage: ${storageBucket})`);
       } else {
-        const fs = getFirestore(app);
+        const fs = getFirestore(fbApp);
         fs.settings({ ignoreUndefinedProperties: true });
         db_firebase = fs;
         console.log(`✅ Firebase initialized successfully (Database: default, Storage: ${storageBucket})`);
@@ -158,9 +164,6 @@ try {
       
       // Initialize Storage
       admin.storage().bucket(storageBucket);
-    
-    // Start background services after Firebase completes setup
-    startDisasterAlertService();
   }
 } catch (err: any) {
   firebase_init_error = err.message;
@@ -2104,6 +2107,9 @@ app.post('/api/sos/contacts', authenticate, async (req: any, res: any) => {
 
 async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
+  
+  // Start background services in persistent environments
+  startDisasterAlertService();
   
   // --- Cleanup Job (Firestore Version) ---
   // Run every hour to permanently delete accounts scheduled for deletion more than 30 days ago
