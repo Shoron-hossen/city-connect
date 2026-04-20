@@ -28,12 +28,16 @@ export interface User {
 
 // --- Main App Component ---
 // --- Helper for robust API requests ---
-async function request(url: string, options: RequestInit = {}) {
-  const res = await fetch(url, {
+const request = async (url: string, options: RequestInit = {}) => {
+  const token = localStorage.getItem('token');
+  const baseUrl = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace(/\/$/, '') : '';
+  const finalUrl = url.startsWith('http') ? url : `${baseUrl}${url}`;
+  
+  const res = await fetch(finalUrl, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${localStorage.getItem('token')}`,
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },
   });
@@ -2355,7 +2359,7 @@ function AdminUsers() {
                   </div>
                   <div>
                     <p className="text-xs text-gray-500 uppercase tracking-wider">Verified</p>
-                    <p className="font-medium">{selectedUser.is_verified ? 'Yes' : 'Pending'}</p>
+                    <p className="font-medium">{(selectedUser.is_verified || selectedUser.status === 'active') ? 'Yes' : 'Pending'}</p>
                   </div>
                 </div>
               </div>
@@ -4301,42 +4305,46 @@ function SOSPage({ user, setUser }: { user: User, setUser: (user: User | null) =
     setCountdown(null);
     setStatus('ESTABLISHING LIVE TRACKING & SENDING ALERTS...');
     
-    let dynamicLink = 'Unknown Location';
+    let userLocData: any = 'Unknown Location';
     
     if (navigator.geolocation) {
-       // Start tracking position continuously
-       navigator.geolocation.watchPosition(
-          (pos) => {
-            console.log('Location Ping updated: ', pos.coords.latitude, pos.coords.longitude);
-            // Example of dynamic tracking URL schema sent to contacts
-            dynamicLink = `https://cityconnect.live/track?uuid=${user.id}&lat=${pos.coords.latitude}&lng=${pos.coords.longitude}`;
-          },
-          (err) => console.warn(err),
-          { enableHighAccuracy: true, timeout: 30000, maximumAge: 5000 }
-       );
-
-       // Initial grab to ensure the first ping is sent out immediately via Twilio
        try {
          const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
-             navigator.geolocation.getCurrentPosition(resolve, reject);
+             navigator.geolocation.getCurrentPosition(resolve, reject, { 
+               enableHighAccuracy: true, 
+               timeout: 10000, 
+               maximumAge: 0 
+             });
          });
-         dynamicLink = `https://cityconnect.live/track?uuid=${user.id}&lat=${pos.coords.latitude}&lng=${pos.coords.longitude}`;
-       } catch(e) {}
+         userLocData = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+       } catch(e) {
+         console.warn("Geolocation Error:", e);
+       }
     }
 
     try {
-      await request('/api/sos/trigger', {
+      const res: any = await request('/api/sos/trigger', {
         method: 'POST',
         body: JSON.stringify({ 
           emergencyType: 'General Emergency',
-          userLocation: dynamicLink,
-          contactPhone: user.parent_number || user.relative_number,
+          userLocation: userLocData,
           userName: user.name
         })
       });
-      setStatus('TWILIO ALERTS SENT SUCCESSFULLY!');
+      
+      if (res.success) {
+        let statusMsg = 'SOS Alerts Dispatched!';
+        if (res.details) {
+          const smsCount = res.details.sms?.length || 0;
+          const emailCount = res.details.email?.length || 0;
+          statusMsg = `Alerts sent to ${smsCount} phone(s) and ${emailCount} email(s)!`;
+        }
+        setStatus(statusMsg);
+      } else {
+        throw new Error(res.error || 'Dispatch failed');
+      }
     } catch (err: any) {
-      setStatus('TWILIO DISPATCH FAILED: ' + err.message);
+      setStatus('SOS DISPATCH FAILED: ' + err.message);
     }
     
     // Simulate finding nearby police stations

@@ -228,13 +228,13 @@ const getTransporter = () => {
   });
 };
 
-const sendEmail = async (to: string, subject: string, text: string) => {
+const sendEmail = async (to: string, subject: string, text: string, html?: string) => {
   const transporter = getTransporter();
   const fromEmail = process.env.EMAIL_USER?.trim();
 
   if (!transporter || !fromEmail) {
     console.warn('EMAIL_USER or EMAIL_PASS not set. Email sending skipped.');
-    console.log(`[MOCK EMAIL] To: ${to}, Subject: ${subject}, Body: ${text}`);
+    console.log(`[MOCK EMAIL] To: ${to}, Subject: ${subject}`);
     return { success: false, error: 'Email credentials not configured' };
   }
 
@@ -243,7 +243,8 @@ const sendEmail = async (to: string, subject: string, text: string) => {
       from: `"CityConnect" <${fromEmail}>`,
       to,
       subject,
-      text
+      text,
+      html: html || undefined
     });
     return { success: true };
   } catch (err: any) {
@@ -1936,38 +1937,94 @@ app.delete('/api/admin/users-all', authenticate, isAdmin, async (req: any, res: 
 // ADVANCED SOS WITH TWILIO
 // -----------------------------
 app.post('/api/sos/trigger', authenticate, async (req: any, res: any) => {
-  const { userLocation, emergencyType, contactPhone, userName } = req.body;
-  if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN || !process.env.TWILIO_PHONE_NUMBER) {
-    console.error('Twilio env missing, falling back.');
-    return res.json({ success: false, error: 'Twilio configuration is missing from the environment.' });
-  }
+  const { userLocation, emergencyType, userName } = req.body;
+  
+  if (!db_firebase) return res.status(500).json({ error: 'Database not initialized' });
 
   try {
-    const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-    let navUrl = userLocation;
-    if (userLocation && userLocation.lat && userLocation.lng) {
+    // 1. Fetch full user to get all emergency contacts
+    const userDoc = await db_firebase.collection('users').doc(req.user.email).get();
+    if (!userDoc.exists) return res.status(404).json({ error: 'User not found' });
+    
+    const userData = userDoc.data();
+    const contacts = {
+      phone: [userData.parent_number, userData.relative_number].filter(p => !!p),
+      email: [userData.parent_email, userData.relative_email].filter(e => !!e)
+    };
+
+    let navUrl = typeof userLocation === 'string' ? userLocation : 'Unknown Location';
+    
+    // Check if coordinates were passed as an object
+    if (userLocation && typeof userLocation === 'object' && userLocation.lat && userLocation.lng) {
       navUrl = `https://www.google.com/maps?q=${userLocation.lat},${userLocation.lng}`;
     }
 
-    const msg = `EMERGENCY ALERT from ${userName || 'CityConnect User'}. Reason: ${emergencyType}. Immediate assistance required. Live location: ${navUrl}`;
-    
-    // Send SMS
-    await client.messages.create({
-      body: msg,
-      from: process.env.TWILIO_PHONE_NUMBER,
-      to: contactPhone
-    });
-    
-    // Optional: Make Call
-    await client.calls.create({
-      twiml: `<Response><Say>Emergency Alert! ${userName || 'A user'} needs immediate assistance for ${emergencyType}. Check your SMS for their live location.</Say></Response>`,
-      from: process.env.TWILIO_PHONE_NUMBER,
-      to: contactPhone
-    });
+    const msg = `EMERGENCY ALERT from ${userName || userData.name || 'CityConnect User'}. Reason: ${emergencyType}. Immediate assistance required. Live location: ${navUrl}`;
 
-    res.json({ success: true, message: 'SOS Dispatched via Twilio!' });
+    const results = {
+      sms: [] as string[],
+      email: [] as string[]
+    };
+
+    // 2. Send SMS via Twilio
+    const sid = process.env.TWILIO_ACCOUNT_SID;
+    const auth = process.env.TWILIO_AUTH_TOKEN;
+    const from = process.env.TWILIO_PHONE_NUMBER;
+
+    if (sid && sid.startsWith('AC') && auth && from && contacts.phone.length > 0) {
+      const client = twilio(sid, auth);
+      for (const phone of contacts.phone) {
+        try {
+          await client.messages.create({
+            body: msg,
+            from: process.env.TWILIO_PHONE_NUMBER,
+            to: phone
+          });
+          results.sms.push(phone);
+
+          // Voice Call fallback
+          await client.calls.create({
+            twiml: `<Response><Say>Emergency Alert! ${userName || userData.name} needs immediate assistance for ${emergencyType}. Check your SMS for their live location.</Say></Response>`,
+            from: process.env.TWILIO_PHONE_NUMBER,
+            to: phone
+          });
+        } catch (e: any) {
+          console.error(`Twilio Error for ${phone}:`, e.message);
+        }
+      }
+    }
+
+    // 3. Send Email via Nodemailer
+    if (contacts.email.length > 0) {
+      const emailHtml = `
+        <div style="font-family: sans-serif; border: 4px solid #ef4444; border-radius: 16px; padding: 24px; max-width: 600px;">
+          <h1 style="color: #ef4444; margin-top: 0;">EMERGENCY SOS ALERT (CityConnect)</h1>
+          <p style="font-size: 18px;"><strong>${userName || userData.name}</strong> has triggered an emergency alert.</p>
+          <div style="background: #fee2e2; padding: 16px; border-radius: 8px; margin: 20px 0;">
+            <p style="margin: 0;"><strong>Emergency Type:</strong> ${emergencyType}</p>
+            <p style="margin: 8px 0 0 0;"><strong>Live Location:</strong> <a href="${navUrl}" style="color: #ef4444; font-weight: bold;">Click to View Location</a></p>
+          </div>
+          <p style="color: #6b7280; font-size: 14px;">This is an automated message from CityConnect. Please contact the user immediately or dispatch help.</p>
+        </div>
+      `;
+
+      for (const emailAddr of contacts.email) {
+        try {
+          const res = await sendEmail(emailAddr, `EMERGENCY ALERT: ${userName || userData.name}`, msg, emailHtml);
+          if (res.success) results.email.push(emailAddr);
+        } catch (e: any) {
+          console.error(`Email Error for ${emailAddr}:`, e.message);
+        }
+      }
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'SOS Alerts Dispatched',
+      details: results
+    });
   } catch (err: any) {
-    console.error('Twilio Error:', err.message);
+    console.error('SOS Trigger Error:', err.message);
     res.json({ success: false, error: err.message });
   }
 });
