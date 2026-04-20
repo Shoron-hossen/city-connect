@@ -11,7 +11,7 @@ import jwt from 'jsonwebtoken';
 import nodemailer from 'nodemailer';
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
-import { createServer as createViteServer } from 'vite';
+// import { createServer as createViteServer } from 'vite'; // Removed to fix Vercel crash
 import path from 'path';
 import fs from 'fs';
 import { Groq } from 'groq-sdk';
@@ -2172,7 +2172,8 @@ async function startServer() {
 
   if (process.env.NODE_ENV !== "production") {
     try {
-      console.log('Initializing Vite server...');
+      console.log('Initializing Vite server (Dynamic)...');
+      const { createServer: createViteServer } = await import('vite');
       const vite = await createViteServer({
         server: { middlewareMode: true },
         appType: "spa",
