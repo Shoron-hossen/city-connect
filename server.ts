@@ -191,26 +191,51 @@ app.get('/api/health', (req, res) => {
 const sendFreeSOSAlert = async (to: string, userName: string, message: string, location: string) => {
   const subject = `🚨 EMERGENCY SOS: ${userName} needs help!`;
   
-  // If location looks like coordinates, make it a Google Maps link
-  let locationDisplay = location;
-  if (location && location.includes(',')) {
+  // Create a reliable Google Maps link
+  let mapsUrl = '';
+  const isCoords = location && location.includes(',') && !isNaN(parseFloat(location.split(',')[0]));
+  
+  if (isCoords) {
     const coords = location.split(',').map(c => c.trim());
-    if (coords.length === 2 && !isNaN(parseFloat(coords[0])) && !isNaN(parseFloat(coords[1]))) {
-      locationDisplay = `https://www.google.com/maps?q=${coords[0]},${coords[1]}`;
-    }
+    mapsUrl = `https://www.google.com/maps?q=${coords[0]},${coords[1]}`;
+  } else if (location && location !== 'Unknown Location' && location !== 'Location access denied') {
+    mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(location)}`;
   }
 
-  const body = `
+  const textBody = `
     EMERGENCY ALERT
     ----------------
     User: ${userName}
     Message: ${message}
-    Location: ${locationDisplay}
+    Location: ${location}
+    ${mapsUrl ? `View on Map: ${mapsUrl}` : ''}
     
     This is an automated emergency alert from CityConnect.
   `;
+
+  const htmlBody = `
+    <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; border: 2px solid #ef4444; border-radius: 16px; overflow: hidden;">
+      <div style="background-color: #ef4444; color: white; padding: 20px; text-align: center;">
+        <h1 style="margin: 0; font-size: 24px;">🚨 EMERGENCY SOS ALERT</h1>
+      </div>
+      <div style="padding: 30px; background-color: #ffffff; color: #1f2937;">
+        <p style="font-size: 18px; margin-bottom: 20px;"><strong>${userName}</strong> is in an emergency and needs immediate assistance.</p>
+        <div style="background-color: #fef2f2; border-left: 4px solid #ef4444; padding: 15px; margin-bottom: 20px;">
+          <p style="margin: 0; color: #b91c1c;"><strong>Message:</strong> ${message}</p>
+        </div>
+        <p style="margin-bottom: 10px;"><strong>Last Known Location:</strong> ${location}</p>
+        ${mapsUrl ? `
+          <a href="${mapsUrl}" style="display: inline-block; background-color: #3b82f6; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; margin-top: 10px;">
+            📍 View Real-time Location on Maps
+          </a>
+        ` : '<p style="color: #6b7280; font-style: italic;">(Map coordinates not available for this alert)</p>'}
+        <hr style="margin: 30px 0; border: 0; border-top: 1px solid #e5e7eb;" />
+        <p style="font-size: 12px; color: #6b7280; text-align: center;">This is an automated security alert from the CityConnect platform.</p>
+      </div>
+    </div>
+  `;
   
-  return await sendEmail(to, subject, body);
+  return await sendEmail(to, subject, textBody, htmlBody);
 };
 
 // Helper to get email transporter with latest env vars
@@ -1970,14 +1995,16 @@ app.post('/api/sos/trigger', authenticate, async (req: any, res: any) => {
       email: [userData.parent_email, userData.relative_email].filter(e => !!e)
     };
 
-    let navUrl = typeof userLocation === 'string' ? userLocation : 'Unknown Location';
+    let navUrl = '';
     
     // Check if coordinates were passed as an object
     if (userLocation && typeof userLocation === 'object' && userLocation.lat && userLocation.lng) {
       navUrl = `https://www.google.com/maps?q=${userLocation.lat},${userLocation.lng}`;
+    } else if (typeof userLocation === 'string' && userLocation !== 'Unknown Location' && userLocation.trim() !== '') {
+      navUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(userLocation)}`;
     }
 
-    const msg = `EMERGENCY ALERT from ${userName || userData.name || 'CityConnect User'}. Reason: ${emergencyType}. Immediate assistance required. Live location: ${navUrl}`;
+    const msg = `EMERGENCY ALERT from ${userName || userData.name || 'CityConnect User'}. Reason: ${emergencyType}. Immediate assistance required. ${navUrl ? `Live location: ${navUrl}` : '(Location unknown)'}`;
 
     const results = {
       sms: [] as string[],
@@ -2020,7 +2047,9 @@ app.post('/api/sos/trigger', authenticate, async (req: any, res: any) => {
           <p style="font-size: 18px;"><strong>${userName || userData.name}</strong> has triggered an emergency alert.</p>
           <div style="background: #fee2e2; padding: 16px; border-radius: 8px; margin: 20px 0;">
             <p style="margin: 0;"><strong>Emergency Type:</strong> ${emergencyType}</p>
-            <p style="margin: 8px 0 0 0;"><strong>Live Location:</strong> <a href="${navUrl}" style="color: #ef4444; font-weight: bold;">Click to View Location</a></p>
+            ${navUrl ? `
+              <p style="margin: 8px 0 0 0;"><strong>Live Location:</strong> <a href="${navUrl}" style="color: #ef4444; font-weight: bold;">Click to View Location</a></p>
+            ` : '<p style="margin: 8px 0 0 0; color: #6b7280; font-style: italic;">(Precise location not available)</p>'}
           </div>
           <p style="color: #6b7280; font-size: 14px;">This is an automated message from CityConnect. Please contact the user immediately or dispatch help.</p>
         </div>
