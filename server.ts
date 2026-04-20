@@ -15,7 +15,7 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import { Groq } from 'groq-sdk';
-import { startDisasterAlertService } from './disasterService.js';
+// Disaster service removed
 // SQLite removed for Vercel deployment
 
 const app = express();
@@ -2108,9 +2108,6 @@ app.post('/api/sos/contacts', authenticate, async (req: any, res: any) => {
 async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
   
-  // Start background services in persistent environments
-  startDisasterAlertService();
-  
   // --- Cleanup Job (Firestore Version) ---
   // Run every hour to permanently delete accounts scheduled for deletion more than 30 days ago
   setInterval(async () => {
@@ -2160,7 +2157,7 @@ async function startServer() {
     cors: { origin: "*", methods: ["GET", "POST"] }
   });
   
-  // Set io mapping globally so disasterService can emit
+  // Set io mapping globally
   const globalAny = global as any;
   globalAny.io = io;
   
