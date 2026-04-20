@@ -28,7 +28,7 @@ export interface User {
 
 // --- Main App Component ---
 // --- Helper for robust API requests ---
-const request = async (url: string, options: RequestInit = {}) => {
+export const request = async (url: string, options: RequestInit = {}) => {
   const token = localStorage.getItem('token');
   const baseUrl = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace(/\/$/, '') : '';
   const finalUrl = url.startsWith('http') ? url : `${baseUrl}${url}`;
@@ -1285,13 +1285,26 @@ function Dashboard({ user, setUser }: { user: User, setUser: (user: User | null)
                   <Loader2 className="animate-spin text-blue-400" size={32} />
                 </div>
               ) : activities.length > 0 ? (
-                activities.map((log) => (
-                  <div key={log.id} className="bg-white/5 p-4 rounded-2xl border border-white/5">
+                activities.slice(0, 3).map((log) => (
+                  <div 
+                    key={log.id} 
+                    onClick={() => {
+                      if (log.action === 'report_submitted' && log.report_id) {
+                        navigate('/my-reports', { state: { reportId: log.report_id } });
+                      } else if (log.action === 'transport_booking') {
+                        navigate('/transportation');
+                      }
+                    }}
+                    className="bg-white/5 p-4 rounded-2xl border border-white/5 hover:bg-white/10 transition-colors cursor-pointer group"
+                  >
                     <div className="flex justify-between items-start mb-1">
-                      <span className="text-blue-300 font-medium capitalize">{log.action.replace('_', ' ')}</span>
-                      <span className="text-[10px] text-gray-400">{new Date(log.created_at).toLocaleString()}</span>
+                      <span className="text-blue-300 font-medium capitalize group-hover:text-blue-200 transition-colors">{log.action.replace('_', ' ')}</span>
+                      <span className="text-[10px] text-gray-400">{new Date(log.timestamp || log.created_at).toLocaleString()}</span>
                     </div>
                     <p className="text-gray-300 text-sm">{log.details}</p>
+                    <div className="mt-2 text-[10px] text-blue-400/50 font-bold uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity">
+                      Click to view details →
+                    </div>
                   </div>
                 ))
               ) : (
@@ -1387,6 +1400,7 @@ function MyReports({ user, setUser }: { user: User, setUser: (user: User | null)
   const [historyLoading, setHistoryLoading] = useState(false);
   const [imageModal, setImageModal] = useState<string | null>(null);
   const navigate = useNavigate();
+  const location = useLocation();
 
   const fetchReports = () => {
     request('/api/reports')
@@ -1396,6 +1410,13 @@ function MyReports({ user, setUser }: { user: User, setUser: (user: User | null)
   };
 
   useEffect(() => { fetchReports(); }, []);
+
+  useEffect(() => {
+    if (location.state?.reportId && reports.length > 0) {
+      const found = reports.find(r => (r.id === location.state.reportId || r.reportId === location.state.reportId));
+      if (found) handleReportClick(found);
+    }
+  }, [reports, location.state]);
 
   const fetchHistory = async (reportId: string) => {
     setHistoryLoading(true);
@@ -1819,7 +1840,14 @@ Return a JSON object with exactly these keys:
       const categoryResponse = await request('/api/gemini/public', {
         method: 'POST',
         body: JSON.stringify({
-          prompt: `Analyze this image for urban issues. Categorize it as one of: Garbage, Crime, Road Damage, Street Light, Other. Return a JSON object with exactly these keys: "category" (string matching the enum), "confidence" (number between 0 and 1), "description" (brief description of what is seen).`,
+          prompt: `Analyze this image for urban issues.
+          USER INFORMATION:
+          - User selected category: "${issueType}"
+          - User description: "${description}"
+
+          TASK: Identify the category from the list: Garbage, Crime, Road Damage, Street Light, Other.
+          Use the user's selected category and description as a guide. If the image supports their selection, use that category.
+          Return a JSON object with exactly these keys: "category" (string matching the enum), "confidence" (number between 0 and 1), "description" (brief description of what is seen).`,
           images: [{ data: base64Data, mimeType: 'image/jpeg' }]
         })
       });
@@ -1848,7 +1876,14 @@ Return a JSON object with exactly these keys:
       });
 
       // 5. Navigate to success
-      navigate('/success', { state: { issueType: aiResult.category || issueType, location } });
+      navigate('/success', { 
+        state: { 
+          issueType: aiResult.category || issueType, 
+          location, 
+          description,
+          image
+        } 
+      });
 
     } catch (error) {
       console.error("Error submitting report:", error);
@@ -1951,11 +1986,11 @@ Return a JSON object with exactly these keys:
 function Success() {
   const navigate = useNavigate();
   const location = useLocation();
-  const state = location.state as { issueType?: string, location?: string } || {};
+  const state = location.state as { issueType?: string, location?: string, description?: string, image?: string } || {};
 
   return (
-    <div className="flex-1 flex flex-col px-8 py-16 bg-[#f8fafc] text-gray-900 min-h-screen">
-      <div className="max-w-md mx-auto w-full flex flex-col h-full">
+    <div className="flex-1 flex flex-col px-6 py-12 bg-[#f8fafc] text-gray-900 min-h-screen">
+      <div className="max-w-lg mx-auto w-full flex flex-col h-full">
         <div className="flex flex-col items-center text-center mb-12 mt-8">
           <div className="bg-[#16a34a] rounded-full p-5 mb-6 shadow-lg shadow-green-500/20">
             <CheckCircle size={64} className="text-white" strokeWidth={3} />
@@ -1963,27 +1998,40 @@ function Success() {
           <h1 className="text-4xl font-bold text-[#16a34a] leading-tight tracking-tight">Report Submitted<br/>Successfully</h1>
         </div>
         
-        <div className="space-y-6 flex-1 px-2">
-          <div className="border-b border-gray-200 pb-4">
-            <p className="text-gray-500 text-lg mb-1">Issue Type</p>
-            <p className="text-2xl font-medium">{state.issueType || 'Garbage'}</p>
-          </div>
-          
-          <div className="border-b border-gray-200 pb-4">
-            <p className="text-gray-500 text-lg mb-1">Location</p>
-            <p className="text-2xl font-medium">{state.location || 'Chattogram'}</p>
-          </div>
-          
-          <div className="pb-4">
-            <p className="text-gray-500 text-lg mb-1">AI Status</p>
-            <div className="flex items-center gap-2">
-              <p className="text-2xl font-medium">Verified</p>
-              <CheckCircle size={24} className="text-[#16a34a]" strokeWidth={3} />
+        <div className="bg-white rounded-[2.5rem] shadow-xl shadow-gray-200/50 p-8 space-y-6 flex-1 mb-8 border border-gray-100">
+           {state.image && (
+             <div className="w-full aspect-video rounded-3xl overflow-hidden mb-6 border border-gray-100">
+               <img src={state.image} alt="Reported issue" className="w-full h-full object-cover" />
+             </div>
+           )}
+
+           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="border-b border-gray-100 pb-4 md:border-b-0 md:pb-0">
+              <p className="text-gray-400 text-xs font-bold uppercase tracking-widest mb-1">Issue Type</p>
+              <p className="text-xl font-bold text-gray-800">{state.issueType || 'Garbage'}</p>
             </div>
-          </div>
+            
+            <div className="border-b border-gray-100 pb-4 md:border-b-0 md:pb-0">
+              <p className="text-gray-400 text-xs font-bold uppercase tracking-widest mb-1">AI Status</p>
+              <div className="flex items-center gap-2">
+                <p className="text-xl font-bold text-[#16a34a]">Verified</p>
+                <CheckCircle size={20} className="text-[#16a34a]" strokeWidth={3} />
+              </div>
+            </div>
+           </div>
+          
+           <div className="border-t border-gray-50 pt-6">
+            <p className="text-gray-400 text-xs font-bold uppercase tracking-widest mb-2">Description</p>
+            <p className="text-gray-700 leading-relaxed font-medium">{state.description || 'No description provided'}</p>
+           </div>
+
+           <div className="border-t border-gray-50 pt-6">
+            <p className="text-gray-400 text-xs font-bold uppercase tracking-widest mb-2">Location</p>
+            <p className="text-gray-600 text-sm">{state.location || 'Chattogram'}</p>
+           </div>
         </div>
-        
-        <button onClick={() => navigate('/dashboard')} className="w-full mt-8 bg-[#16a34a] text-white rounded-full py-4 font-semibold text-lg hover:bg-[#15803d] transition-all active:scale-95 shadow-lg shadow-green-500/20">
+
+        <button onClick={() => navigate('/dashboard')} className="w-full bg-[#16a34a] text-white rounded-full py-4 font-semibold text-lg hover:bg-[#15803d] transition-all active:scale-95 shadow-lg shadow-green-500/20">
           Back to Dashboard
         </button>
       </div>

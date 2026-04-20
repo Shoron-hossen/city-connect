@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Bus, Car, Train, MapPin, Navigation, Bike, Zap, CheckCircle, Loader2, AlertTriangle } from 'lucide-react';
 import { motion } from 'framer-motion';
 
-import { Navbar, User } from './App';
+import { Navbar, User, request } from './App';
 
 export default function TransportationPage({ user, setUser }: { user: User, setUser: (user: User | null) => void }) {
   const [bookingMessage, setBookingMessage] = useState('');
@@ -77,8 +77,20 @@ export default function TransportationPage({ user, setUser }: { user: User, setU
     }
   }, []);
 
-  const handleBooking = (type: string) => {
+  const handleBooking = async (type: string) => {
     setBookingMessage(`Successfully booked ${type}!`);
+    try {
+      await request('/api/activity/log', {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'transport_booking',
+          details: `Booked a ${type} at ${locationName}`,
+          metadata: { type, location: locationName }
+        })
+      });
+    } catch (err) {
+      console.error('Failed to log booking:', err);
+    }
     setTimeout(() => setBookingMessage(''), 3000);
   };
 

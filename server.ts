@@ -1800,6 +1800,24 @@ app.get('/api/activity', authenticate, async (req: any, res) => {
   }
 });
 
+app.post('/api/activity/log', authenticate, async (req: any, res) => {
+  if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
+  const { action, details, metadata } = req.body;
+  try {
+    const docRef = await db_firebase.collection('activity_logs').add({
+      user_email: req.user.email,
+      action,
+      details,
+      metadata: metadata || {},
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      created_at: admin.firestore.FieldValue.serverTimestamp()
+    });
+    res.json({ success: true, id: docRef.id });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to log activity: ' + err.message });
+  }
+});
+
 // --- Admin Extended Routes ---
 app.get('/api/admin/stats', authenticate, isAdmin, async (req, res) => {
   if (!db_firebase) return res.status(500).json({ error: 'Firebase not configured' });
